@@ -68,7 +68,7 @@ with col2:
                 
                 client = genai.Client(api_key=API_KEY)
                 respuesta = client.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model='models/gemini-2.5-flash',
                     contents=prompt_final
                 )
                 
@@ -80,4 +80,5 @@ with col2:
                     st.code(json_estadisticas, language="json")
                     
         except Exception as e:
+
             st.error(f"Falla crítica en el procesamiento: {e}")
