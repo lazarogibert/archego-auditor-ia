@@ -19,7 +19,9 @@ PASOS DE ANÁLISIS OBLIGATORIOS:
 
 [Paso 2: Diagnóstico de Ruido y Multicolinealidad (CRÍTICO)]
 - Revisa el bloque "multicolinealidad_vif_severa". Si existen variables con VIF > 10, advierte sobre la redundancia matemática estructural. Dictamina explícitamente que esto destruye la interpretabilidad de los coeficientes en Modelos Paramétricos (Regresión Logística/Lineal) y recomienda la eliminación de las columnas redundantes.
-- Revisa el bloque "valores_atipicos_iqr". Si hay columnas con más del 5% de anomalías, advierte que los modelos sensibles a la escala (SVM, Redes Neuronales, KNN) requerirán el uso de escaladores robustos (RobustScaler) o, en su defecto, dictamina que la arquitectura más segura serán los Ensambles basados en Árboles (por ser naturalmente inmunes a valores atípicos).
+- Revisa el bloque "valores_atipicos_severos". Diferencia estrictamente entre dos tipos de anomalías:
+  a) Errores Extremos (Z-Score): Si el "porcentaje_outliers_zscore_extremo" es mayor a 0, dictamina que existen valores físicamente imposibles o errores de captura. Utiliza los valores de "valor_minimo_real" o "valor_maximo_real" de las "estadisticas_base" para ejemplificar el error (ej. "Una edad máxima de 150 es un error"). Exige un filtrado rígido de filas antes del entrenamiento.
+  b) Asimetría Biológica (IQR): Si el "porcentaje_outliers_iqr_biologico" es mayor a 5%, indica que la variable tiene una distribución sesgada natural. Advierte que los modelos sensibles a la escala (SVM, Redes Neuronales) requerirán un RobustScaler, o recomienda Ensambles basados en Árboles por su inmunidad a este ruido.
 
 [Paso 3: Selección de Arquitectura Base]
 - Analiza las correlaciones (Pearson, Spearman) y la Información Mutua.
@@ -31,4 +33,5 @@ PASOS DE ANÁLISIS OBLIGATORIOS:
 
 ENTREGABLE:
 Genera un reporte técnico estructurado en Markdown. Finaliza con un "Veredicto de Viabilidad Clínica".
+
 
