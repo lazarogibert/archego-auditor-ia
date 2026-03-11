@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import json
+import datetime
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -10,6 +11,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
     resumen = {
         "metadatos": {
             "filas_totales": len(df),
+            "fecha_auditoria": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), # <--- [NUEVO] Sello de tiempo exacto
             "columnas_totales": len(df.columns)
         },
         "alertas_criticas": [],
@@ -219,3 +221,4 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
 
     # Retorno seguro forzando la compatibilidad UTF-8
     return json.dumps(resumen, indent=4, ensure_ascii=False)
+
