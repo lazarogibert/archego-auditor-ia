@@ -98,45 +98,50 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                         pass # Silenciamos otros errores menores de numpy para mantener el pipeline vivo
 
             # ==========================================
-            # C. DETECCIÓN DE VALORES ATÍPICOS (IQR)
+            # C. DETECCIÓN EXHAUSTIVA DE VALORES ATÍPICOS (HÍBRIDO: IQR + Z-SCORE)
             # ==========================================
-            resumen["analisis_predictivo"]["valores_atipicos_iqr"] = {}
-            # Excluimos la variable objetivo del análisis de outliers para no sesgar
+            resumen["analisis_predictivo"]["valores_atipicos_severos"] = {}
+            # Excluimos la variable objetivo para no sesgar el análisis
             cols_pred_num = [c for c in cols_num if c != columna_objetivo]
             
             for col in cols_pred_num:
                 s = df[col].dropna()
-                if not s.empty:
-                    Q1 = s.quantile(0.25)
-                    Q3 = s.quantile(0.75)
+                
+                # 1. Filtro de Seguridad: Mínimo 10 muestras y exclusión de banderas binarias (0/1)
+                if len(s) > 10 and s.nunique() > 2: 
+                    # Extraemos métricas base forzando float nativo para evitar colapsos en el JSON
+                    Q1 = float(s.quantile(0.25))
+                    Q3 = float(s.quantile(0.75))
                     IQR = Q3 - Q1
+                    media = float(s.mean())
+                    std = float(s.std())
                     
-                    if IQR > 0: # Evitamos divisiones o cálculos inútiles en columnas constantes
-                        limite_inf = Q1 - 1.5 * IQR
-                        limite_sup = Q3 + 1.5 * IQR
-                        outliers = s[(s < limite_inf) | (s > limite_sup)]
-                        pct_outliers = round((len(outliers) / len(s)) * 100, 2)
+                    pct_iqr = 0.0
+                    pct_z = 0.0
+                    
+                    # 2. Motor 1: Rango Intercuartílico (Asimetría Biológica)
+                    if IQR > 0:
+                        lim_inf_iqr = Q1 - 1.5 * IQR
+                        lim_sup_iqr = Q3 + 1.5 * IQR
+                        outliers_iqr = s[(s < lim_inf_iqr) | (s > lim_sup_iqr)]
+                        pct_iqr = round(float((len(outliers_iqr) / len(s)) * 100), 2)
                         
-                        # Alerta de Ruido: Solo reportamos si los outliers superan el 5% de la variable
-                        if pct_outliers > 5.0:
-                            resumen["analisis_predictivo"]["valores_atipicos_iqr"][col] = {
-                                "porcentaje_anomalias": pct_outliers,
-                                "limite_matematico_inferior": round(limite_inf, 2),
-                                "limite_matematico_superior": round(limite_sup, 2)
+                    # 3. Motor 2: Z-Score (Anomalías y Errores Extremos)
+                    if std > 0:
+                        lim_inf_z = media - 3 * std
+                        lim_sup_z = media + 3 * std
+                        outliers_z = s[(s < lim_inf_z) | (s > lim_sup_z)]
+                        pct_z = round(float((len(outliers_z) / len(s)) * 100), 2)
+                        
+                    # 4. Extracción: Solo reportamos si cruza los umbrales de peligro
+                    if pct_iqr > 5.0 or pct_z > 0.0:
+                        resumen["analisis_predictivo"]["valores_atipicos_severos"][col] = {
+                            "porcentaje_outliers_iqr_biologico": pct_iqr,
+                            "porcentaje_outliers_zscore_extremo": pct_z,
+                            "estadisticas_base": {
+                                "media": round(media, 2),
+                                "desviacion_estandar": round(std, 2),
+                                "valor_minimo_real": round(float(s.min()), 2),
+                                "valor_maximo_real": round(float(s.max()), 2)
                             }
-        # 3. ANÁLISIS FEDERADO (Silos)
-        if columna_nodo and columna_nodo in df.columns:
-            resumen["analisis_federado_nodos"] = {}
-            agrupado = df.groupby(columna_nodo)
-            for nodo, datos_nodo in agrupado:
-                dist_nodo = datos_nodo[columna_objetivo].value_counts(normalize=True).to_dict() if columna_objetivo in datos_nodo.columns else {}
-                resumen["analisis_federado_nodos"][str(nodo)] = {
-                    "volumen_filas": len(datos_nodo),
-                    "distribucion_pct": {str(k): round(v * 100, 2) for k, v in dist_nodo.items()}
-                }
-
-        return json.dumps(resumen, indent=4, ensure_ascii=False)
-
-    except Exception as e:
-
-        return json.dumps({"error_procesamiento": str(e)})
+                        }
