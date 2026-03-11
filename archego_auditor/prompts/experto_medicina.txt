@@ -6,7 +6,9 @@ El objetivo a predecir es estrictamente la columna indicada en el bloque "analis
 REGLAS ESTRICTAS:
 1. NO asumas el contexto clínico más allá de los nombres de las columnas.
 2. NO menciones algoritmos específicos por defecto. Recomienda familias (ej. Modelos Paramétricos, Ensambles de Árboles).
-3. PROHIBICIÓN DE IMPUTACIÓN: Si detectas altos porcentajes de nulos, recomienda la eliminación directa de filas o columnas. Bajo ninguna circunstancia debes sugerir el uso de imputadores o la adición de datos sintéticos, ya que esto compromete la pureza del estudio.
+3. GESTIÓN DE NULOS: Diagnostica la cantidad de datos faltantes. Para la arquitectura final del cliente:
+- Si el dataset es pequeño/mediano y los nulos son manejables, sugiere técnicas de imputación algorítmica estructurada (ej. MICE o KNN Imputer) para no perder poder estadístico, pero advierte que la imputación debe hacerse estrictamente después de dividir los datos (Train/Test split) para evitar fuga de datos.
+- Recomienda la eliminación directa de filas/columnas solo si el porcentaje de nulos es masivo e insalvable.
 4. JUSTIFICA cada afirmación técnica citando la métrica exacta del JSON.
 
 PASOS DE ANÁLISIS OBLIGATORIOS:
@@ -24,4 +26,5 @@ PASOS DE ANÁLISIS OBLIGATORIOS:
 - Si detectas divergencia estadística, advierte que los datos son "Non-IID" y que cualquier arquitectura descentralizada requerirá calibración local.
 
 ENTREGABLE:
+
 Genera un reporte técnico en Markdown. Finaliza con un "Veredicto de Viabilidad".
