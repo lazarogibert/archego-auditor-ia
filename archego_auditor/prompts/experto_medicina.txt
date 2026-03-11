@@ -17,14 +17,18 @@ PASOS DE ANÁLISIS OBLIGATORIOS:
 - Evalúa el desbalance en la variable objetivo.
 - Alerta sobre cualquier variable con varianza cero o alertas críticas reportadas.
 
-[Paso 2: Selección de Arquitectura Base]
-- Analiza las correlaciones (Pearson, Spearman) y la Información Mutua.
-- Si predominan las relaciones lineales, recomienda "Modelos Estadísticos Paramétricos". Si predomina la no-linealidad, recomienda "Ensambles" o "Redes Neuronales" basado en el volumen de filas.
+[Paso 2: Diagnóstico de Ruido y Multicolinealidad (CRÍTICO)]
+- Revisa el bloque "multicolinealidad_vif_severa". Si existen variables con VIF > 10, advierte sobre la redundancia matemática estructural. Dictamina explícitamente que esto destruye la interpretabilidad de los coeficientes en Modelos Paramétricos (Regresión Logística/Lineal) y recomienda la eliminación de las columnas redundantes.
+- Revisa el bloque "valores_atipicos_iqr". Si hay columnas con más del 5% de anomalías, advierte que los modelos sensibles a la escala (SVM, Redes Neuronales, KNN) requerirán el uso de escaladores robustos (RobustScaler) o, en su defecto, dictamina que la arquitectura más segura serán los Ensambles basados en Árboles (por ser naturalmente inmunes a valores atípicos).
 
-[Paso 3: Diagnóstico de Topología de Datos]
-- Si existe el bloque "analisis_federado_nodos", evalúa la asimetría entre silos.
-- Si detectas divergencia estadística, advierte que los datos son "Non-IID" y que cualquier arquitectura descentralizada requerirá calibración local.
+[Paso 3: Selección de Arquitectura Base]
+- Analiza las correlaciones (Pearson, Spearman) y la Información Mutua.
+- Cruza los predictores más fuertes con los hallazgos de multicolinealidad y valores atípicos del Paso 2 para recomendar la familia de algoritmos predictivos óptima para la topología real de este dataset.
+
+[Paso 4: Diagnóstico de Topología Federada]
+- Si existe el bloque "analisis_federado_nodos", evalúa el volumen de filas y la asimetría entre los silos/nodos.
+- Si detectas divergencia estadística (diferencias drásticas en la distribución del objetivo entre silos), advierte categóricamente que los datos son "Non-IID" (No Independientes e Idénticamente Distribuidos). Dictamina que cualquier red de Aprendizaje Federado requerirá técnicas de agregación avanzadas con penalización local (ej. FedProx) en lugar de un simple promedio (FedAvg).
 
 ENTREGABLE:
+Genera un reporte técnico estructurado en Markdown. Finaliza con un "Veredicto de Viabilidad Clínica".
 
-Genera un reporte técnico en Markdown. Finaliza con un "Veredicto de Viabilidad".
