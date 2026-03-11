@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 import json
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score
 
 def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
     resumen = {
@@ -145,3 +148,65 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                                 "valor_maximo_real": round(float(s.max()), 2)
                             }
                         }
+            # ==========================================
+            # D. SEPARABILIDAD DE CLASES (PCA + SILHOUETTE)
+            # ==========================================
+            resumen["analisis_predictivo"]["separabilidad_clases"] = {}
+            
+            # Filtro 1: ¿Es un problema de clasificación?
+            y_completo = df[columna_objetivo].dropna()
+            n_clases = y_completo.nunique()
+            
+            # Solo aplicamos si hay entre 2 y 15 clases distintas
+            if 1 < n_clases <= 15 and len(cols_pred_num) >= 2:
+                # Armamos un dataframe temporal sin nulos para este cálculo
+                df_sep = df[cols_pred_num + [columna_objetivo]].dropna()
+                
+                # Filtro 2: Mínimo de datos viables
+                if len(df_sep) > 50:
+                    y_sep = df_sep[columna_objetivo]
+                    
+                    # Filtro 3: Evitar colapso por clases con un solo elemento (Singletons)
+                    clases_validas = y_sep.value_counts()[y_sep.value_counts() > 1].index
+                    df_sep = df_sep[df_sep[columna_objetivo].isin(clases_validas)]
+                    
+                    if df_sep[columna_objetivo].nunique() > 1:
+                        # Filtro 4: La Bomba de Tiempo O(N^2)
+                        # Silhouette Score escala cuadráticamente. Si N > 3000, el servidor colapsará.
+                        if len(df_sep) > 3000:
+                            df_sample = df_sep.sample(n=3000, random_state=42)
+                        else:
+                            df_sample = df_sep
+                            
+                        X_sample = df_sample[cols_pred_num]
+                        y_sample = df_sample[columna_objetivo]
+                        
+                        try:
+                            # 1. Estandarización (Obligatorio para medir distancias)
+                            scaler = StandardScaler()
+                            X_scaled = scaler.fit_transform(X_sample)
+                            
+                            # 2. Reducción de Dimensionalidad (Aislamiento de la varianza principal)
+                            n_comps = min(3, len(cols_pred_num))
+                            pca = PCA(n_components=n_comps, random_state=42)
+                            X_pca = pca.fit_transform(X_scaled)
+                            varianza_explicada = float(sum(pca.explained_variance_ratio_))
+                            
+                            # 3. Cálculo de Silueta
+                            score_silueta = float(silhouette_score(X_pca, y_sample, random_state=42))
+                            
+                            # 4. Traducción semántica del tensor
+                            if score_silueta > 0.40:
+                                estado_manifold = "Altamente Separable (Clústeres limpios)"
+                            elif score_silueta > 0.15:
+                                estado_manifold = "Superposición Moderada (Requiere no-linealidad)"
+                            else:
+                                estado_manifold = "Caos Espacial (Ruido severo / Clases superpuestas)"
+                                
+                            resumen["analisis_predictivo"]["separabilidad_clases"] = {
+                                "score_silueta_pca": round(score_silueta, 3),
+                                "varianza_retenida_pct": round(varianza_explicada * 100, 2),
+                                "diagnostico_topologico": estado_manifold
+                            }
+                        except Exception:
+                            pass # Silenciamiento de fallos geométricos extraños para no detener la app
