@@ -8,7 +8,12 @@ st.set_page_config(page_title="Archego | Auditor B2B", page_icon="⚡", layout="
 API_KEY = os.environ.get("GEMINI_API_KEY", "TU_API_KEY_AQUI")
 
 def cargar_prompt(nombre_archivo):
-    ruta = os.path.join("prompts", f"{nombre_archivo}.txt")
+    # 1. Obtenemos la ruta absoluta de la carpeta donde vive app.py
+    directorio_base = os.path.dirname(os.path.abspath(__file__))
+    
+    # 2. Construimos la ruta dinámica a la carpeta prompts
+    ruta = os.path.join(directorio_base, "prompts", f"{nombre_archivo}.txt")
+    
     with open(ruta, "r", encoding="utf-8") as archivo:
         return archivo.read()
 
@@ -82,3 +87,4 @@ with col2:
         except Exception as e:
 
             st.error(f"Falla crítica en el procesamiento: {e}")
+
