@@ -22,7 +22,9 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
         if 'pt_id' in df.columns:
             resumen["alertas_criticas"].append("La columna 'pt_id' ha sido detectada. Esta columna es un identificador, carece de valor predictivo para la fase 1 y debe ser excluida del modelo.")
 
+        # ==========================================
         # 1. ANÁLISIS DE CATEGORÍAS Y TEXTO LIBRE (NLP)
+        # ==========================================
         cols_categoricas = df.select_dtypes(include=['object', 'category']).columns
         for col in cols_categoricas:
             nulos = int(df[col].isnull().sum())
@@ -39,11 +41,11 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 info_col["tipo_inferido"] = "Texto Libre (NLP) o Identificador"
                 textos_limpios = df[col].dropna().astype(str)
                 if not textos_limpios.empty:
-                    info_col["longitud_promedio_caracteres"] = round(textos_limpios.apply(len).mean(), 2)
+                    info_col["longitud_promedio_caracteres"] = round(float(textos_limpios.apply(len).mean()), 2)
             else:
                 info_col["tipo_inferido"] = "Categoría Estándar"
                 top_valores = df[col].value_counts(normalize=True).head(3).to_dict()
-                info_col["top_3_frecuencias_pct"] = {str(k): round(v * 100, 2) for k, v in top_valores.items()}
+                info_col["top_3_frecuencias_pct"] = {str(k): round(float(v) * 100, 2) for k, v in top_valores.items()}
                 
             resumen["variables_categoricas"][col] = info_col
             
@@ -54,13 +56,10 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
         # 2. ANÁLISIS PREDICTIVO NUMÉRICO
         # ==========================================
         if columna_objetivo and columna_objetivo in df.columns:
-            # Inicialización segura de alertas
-            resumen.setdefault("alertas_criticas", [])
-            
             dist = df[columna_objetivo].value_counts(normalize=True).to_dict()
             resumen["analisis_predictivo"]["objetivo"] = {
                 "columna": columna_objetivo,
-                "distribucion_pct": {str(k): round(v * 100, 2) for k, v in dist.items()}
+                "distribucion_pct": {str(k): round(float(v) * 100, 2) for k, v in dist.items()}
             }
             
             # Separar predictores numéricos del objetivo (Aislamiento seguro)
@@ -76,9 +75,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 resumen["analisis_predictivo"]["spearman_fuertes"] = corr_spearman[abs(corr_spearman) > 0.3].round(3).to_dict()
 
             if len(cols_pred_num) > 0:
-                # ==========================================
                 # B. INFORMACIÓN MUTUA (Seguridad JSON)
-                # ==========================================
                 df_limpio_mi = df[cols_pred_num + [columna_objetivo]].dropna()
                 if not df_limpio_mi.empty:
                     X_mi = df_limpio_mi[cols_pred_num]
@@ -93,14 +90,11 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                         
                         mi_series = pd.Series(mi_scores, index=X_mi.columns)
                         mi_filtrado = mi_series[mi_series > 0.05].round(3).to_dict()
-                        # Blindaje: Conversión estricta a float nativo de Python
                         resumen["analisis_predictivo"]["informacion_mutua_relevante"] = {k: float(v) for k, v in mi_filtrado.items()}
                     except Exception:
                         pass
 
-                # ==========================================
                 # C. MULTICOLINEALIDAD SEVERA (VIF)
-                # ==========================================
                 resumen["analisis_predictivo"]["multicolinealidad_vif_severa"] = {}
                 df_preds = df[cols_pred_num].dropna()
                 if not df_preds.empty:
@@ -118,9 +112,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                     except Exception:
                         pass
 
-                # ==========================================
                 # D. DETECCIÓN EXHAUSTIVA DE VALORES ATÍPICOS (IQR + Z-SCORE)
-                # ==========================================
                 resumen["analisis_predictivo"]["valores_atipicos_severos"] = {}
                 for col in cols_pred_num:
                     s = df[col].dropna()
@@ -158,9 +150,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                                 }
                             }
 
-            # ==========================================
             # E. SEPARABILIDAD DE CLASES (PCA + SILHOUETTE)
-            # ==========================================
             resumen["analisis_predictivo"]["separabilidad_clases"] = {}
             y_completo = df[columna_objetivo].dropna()
             n_clases = y_completo.nunique()
@@ -175,14 +165,12 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                     if df_sep[columna_objetivo].nunique() > 1:
                         if len(df_sep) > 3000:
                             df_sample = df_sep.sample(n=3000, random_state=42)
-                            # Blindaje: Purgar singletons generados por el azar del muestreo
                             y_samp_verif = df_sample[columna_objetivo]
                             clases_seguras = y_samp_verif.value_counts()[y_samp_verif.value_counts() > 1].index
                             df_sample = df_sample[df_sample[columna_objetivo].isin(clases_seguras)]
                         else:
                             df_sample = df_sep
                             
-                        # Verificación final post-muestreo
                         if df_sample[columna_objetivo].nunique() > 1:
                             X_sample = df_sample[cols_pred_num]
                             y_sample = df_sample[columna_objetivo]
@@ -210,3 +198,24 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                                 }
                             except Exception:
                                 pass
+
+        # ==========================================
+        # 3. ANÁLISIS DE SILOS (APRENDIZAJE FEDERADO)
+        # ==========================================
+        if columna_nodo and columna_nodo in df.columns:
+            resumen["analisis_federado_nodos"] = {}
+            dist_nodos = df[columna_nodo].value_counts(normalize=True).to_dict()
+            resumen["analisis_federado_nodos"]["distribucion_muestras"] = {str(k): round(float(v) * 100, 2) for k, v in dist_nodos.items()}
+            
+            if columna_objetivo and columna_objetivo in df.columns:
+                resumen["analisis_federado_nodos"]["divergencia_objetivo_por_nodo"] = {}
+                for nodo in df[columna_nodo].unique():
+                    df_nodo = df[df[columna_nodo] == nodo]
+                    dist_obj_nodo = df_nodo[columna_objetivo].value_counts(normalize=True).to_dict()
+                    resumen["analisis_federado_nodos"]["divergencia_objetivo_por_nodo"][str(nodo)] = {str(k): round(float(v) * 100, 2) for k, v in dist_obj_nodo.items()}
+
+    except Exception as e:
+        resumen["alertas_criticas"].append(f"Error general en el procesamiento del DataFrame: {str(e)}")
+
+    # Retorno seguro forzando la compatibilidad UTF-8
+    return json.dumps(resumen, indent=4, ensure_ascii=False)
