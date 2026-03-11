@@ -56,6 +56,8 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             }
             
             cols_num = df.select_dtypes(include=[np.number]).columns
+            
+            # A. Correlaciones y Dependencias (Solo si el objetivo es numérico/binario)
             if columna_objetivo in cols_num:
                 corr_pearson = df[cols_num].corr(method='pearson')[columna_objetivo].drop(columna_objetivo)
                 resumen["analisis_predictivo"]["pearson_fuertes"] = corr_pearson[abs(corr_pearson) > 0.3].round(3).to_dict()
@@ -67,10 +69,61 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 if not df_limpio.empty:
                     X = df_limpio.drop(columns=[columna_objetivo])
                     y = df_limpio[columna_objetivo]
+                    
+                    # Información Mutua (Captura no linealidad)
                     mi_scores = mutual_info_classif(X, y, random_state=42) if len(y.unique()) < 20 else mutual_info_regression(X, y, random_state=42)
                     mi_series = pd.Series(mi_scores, index=X.columns)
                     resumen["analisis_predictivo"]["informacion_mutua_relevante"] = mi_series[mi_series > 0.05].round(3).to_dict()
 
+                    # ==========================================
+                    # B. MULTICOLINEALIDAD SEVERA (VIF)
+                    # ==========================================
+                    resumen["analisis_predictivo"]["multicolinealidad_vif_severa"] = {}
+                    try:
+                        # Filtro de seguridad: Variables con varianza > 0
+                        X_vif = X.loc[:, X.var() > 0]
+                        # Control dimensional: Necesitamos más filas que columnas para invertir la matriz
+                        if len(X_vif.columns) >= 2 and len(X_vif) > len(X_vif.columns):
+                            corr_matrix = X_vif.corr().values
+                            inv_corr = np.linalg.inv(corr_matrix) # Inversión matricial
+                            vifs = np.diag(inv_corr)
+                            
+                            for col, vif in zip(X_vif.columns, vifs):
+                                # Solo extraemos ruido tóxico (VIF > 10)
+                                if vif > 10 and not np.isinf(vif):
+                                    resumen["analisis_predictivo"]["multicolinealidad_vif_severa"][col] = round(float(vif), 2)
+                    except np.linalg.LinAlgError:
+                        resumen["alertas_criticas"].append("Matriz singular detectada. Existe correlación perfecta (1.0) entre predictores numéricos. Requiere limpieza manual.")
+                    except Exception:
+                        pass # Silenciamos otros errores menores de numpy para mantener el pipeline vivo
+
+            # ==========================================
+            # C. DETECCIÓN DE VALORES ATÍPICOS (IQR)
+            # ==========================================
+            resumen["analisis_predictivo"]["valores_atipicos_iqr"] = {}
+            # Excluimos la variable objetivo del análisis de outliers para no sesgar
+            cols_pred_num = [c for c in cols_num if c != columna_objetivo]
+            
+            for col in cols_pred_num:
+                s = df[col].dropna()
+                if not s.empty:
+                    Q1 = s.quantile(0.25)
+                    Q3 = s.quantile(0.75)
+                    IQR = Q3 - Q1
+                    
+                    if IQR > 0: # Evitamos divisiones o cálculos inútiles en columnas constantes
+                        limite_inf = Q1 - 1.5 * IQR
+                        limite_sup = Q3 + 1.5 * IQR
+                        outliers = s[(s < limite_inf) | (s > limite_sup)]
+                        pct_outliers = round((len(outliers) / len(s)) * 100, 2)
+                        
+                        # Alerta de Ruido: Solo reportamos si los outliers superan el 5% de la variable
+                        if pct_outliers > 5.0:
+                            resumen["analisis_predictivo"]["valores_atipicos_iqr"][col] = {
+                                "porcentaje_anomalias": pct_outliers,
+                                "limite_matematico_inferior": round(limite_inf, 2),
+                                "limite_matematico_superior": round(limite_sup, 2)
+                            }
         # 3. ANÁLISIS FEDERADO (Silos)
         if columna_nodo and columna_nodo in df.columns:
             resumen["analisis_federado_nodos"] = {}
@@ -85,4 +138,5 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
         return json.dumps(resumen, indent=4, ensure_ascii=False)
 
     except Exception as e:
+
         return json.dumps({"error_procesamiento": str(e)})
