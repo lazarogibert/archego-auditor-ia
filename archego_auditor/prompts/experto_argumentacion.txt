@@ -26,5 +26,9 @@ PASOS DE ANÁLISIS OBLIGATORIOS:
   b) Textos Cortos: Si el P99 es menor a 200 palabras, dictamina que el corpus es seguro para la memoria de cualquier Transformador Estándar bidireccional.
   c) Textos Micro: Si el P50 es menor a 15 palabras, sugiere que modelos estadísticos tradicionales (TF-IDF + SVM) podrían igualar el rendimiento del Deep Learning a una fracción del costo computacional.
 
+[Paso 4: Auditoría de Fiabilidad Humana (Inter-Annotator Agreement)]
+- Revisa el bloque "analisis_acuerdo_anotadores". 
+  a) Si ESTÁ PRESENTE y contiene "pares_kappa", evalúa el "score_kappa". Si la mayoría de los pares tienen un "Acuerdo Pobre" o "Acuerdo Justo" (Kappa < 0.40), DICTAMINA que el dataset contiene ambigüedad semántica severa. Advierte que si los humanos no pueden ponerse de acuerdo sobre la clase del texto, el modelo aprenderá ruido y su límite superior de precisión será igual al del Kappa.
+  b) Si el Kappa es > 0.60 ("Acuerdo Sustancial" o superior), felicita la solidez metodológica de las etiquetas, validando que el corpus tiene una base matemática firme ("Ground Truth" sólida) para el entrenamiento.
 ENTREGABLE:
 Genera un reporte técnico estructurado en Markdown. Finaliza con un "Veredicto de Viabilidad NLP".
