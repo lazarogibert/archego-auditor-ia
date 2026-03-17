@@ -25,7 +25,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             resumen["alertas_criticas"].append("La columna 'pt_id' ha sido detectada. Esta columna es un identificador, carece de valor predictivo para la fase 1 y debe ser excluida del modelo.")
 
         # ==========================================
-        # 1. ANÁLISIS DE CATEGORÍAS Y TEXTO LIBRE (NLP)
+        # 1. ANÁLISIS DE CATEGORÍAS Y TEXTO LIBRE (NLP EXTENDIDO)
         # ==========================================
         cols_categoricas = df.select_dtypes(include=['object', 'category']).columns
         for col in cols_categoricas:
@@ -38,12 +38,43 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 "porcentaje_nulos_real": pct_nulos
             }
             
-            # Heurística: Si más del 50% es único, es texto libre (ensayos) o un ID
+            # Heurística: Si más del 50% es único, es texto libre (ensayos, notas) o un ID
             if unicos > (len(df) * 0.5) and unicos > 1: 
                 info_col["tipo_inferido"] = "Texto Libre (NLP) o Identificador"
-                textos_limpios = df[col].dropna().astype(str)
-                if not textos_limpios.empty:
-                    info_col["longitud_promedio_caracteres"] = round(float(textos_limpios.apply(len).mean()), 2)
+                textos_brutos = df[col].dropna().astype(str)
+                
+                # Filtro de seguridad: Purgar strings compuestos solo de espacios (" ", "")
+                textos_validos = textos_brutos[textos_brutos.str.strip().astype(bool)]
+                
+                if not textos_validos.empty:
+                    # Cálculo de topología de tokens (Aproximación por espacios)
+                    conteo_palabras = textos_validos.apply(lambda x: len(x.split()))
+                    
+                    info_col["estadisticas_texto"] = {
+                        "longitud_promedio_caracteres": round(float(textos_validos.apply(len).mean()), 2),
+                        "palabras_promedio": round(float(conteo_palabras.mean()), 2),
+                        "percentil_50_palabras": int(conteo_palabras.quantile(0.50)),
+                        "percentil_90_palabras": int(conteo_palabras.quantile(0.90)),
+                        "percentil_99_palabras": int(conteo_palabras.quantile(0.99))
+                    }
+                    
+                    # Detección de Ruido NLP (Textos inútiles para modelado)
+                    textos_muy_cortos = int((conteo_palabras < 3).sum())
+                    info_col["alertas_nlp"] = {
+                        "textos_menores_a_3_palabras_pct": round(float(textos_muy_cortos / len(textos_validos)) * 100, 2)
+                    }
+                    
+                    # Diversidad Léxica (Type-Token Ratio - TTR)
+                    # Submuestreo extremo para no colapsar la RAM concatenando 50,000 ensayos
+                    if len(textos_validos) > 1000:
+                        muestra_ttr = textos_validos.sample(1000, random_state=42)
+                    else:
+                        muestra_ttr = textos_validos
+                        
+                    todas_las_palabras = " ".join(muestra_ttr.tolist()).lower().split()
+                    if len(todas_las_palabras) > 0:
+                        ttr = len(set(todas_las_palabras)) / len(todas_las_palabras)
+                        info_col["riqueza_lexica_ttr"] = round(float(ttr), 3)
             else:
                 info_col["tipo_inferido"] = "Categoría Estándar"
                 top_valores = df[col].value_counts(normalize=True).head(3).to_dict()
@@ -53,7 +84,8 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             
             if unicos == 1:
                 resumen["alertas_criticas"].append(f"Varianza cero en '{col}'. Variable inútil para predicción.")
-
+       
+        
         # ==========================================
         # 2. ANÁLISIS PREDICTIVO NUMÉRICO
         # ==========================================
