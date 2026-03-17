@@ -2,10 +2,12 @@ import pandas as pd
 import numpy as np
 import json
 import datetime
+import itertools
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, cohen_kappa_score
 
 def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
     resumen = {
@@ -85,6 +87,56 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             if unicos == 1:
                 resumen["alertas_criticas"].append(f"Varianza cero en '{col}'. Variable inútil para predicción.")
        
+
+        # ==========================================
+        # 1.5 RADAR DE ACUERDO ENTRE ANOTADORES (KAPPA DE COHEN)
+        # ==========================================
+        resumen["analisis_acuerdo_anotadores"] = {}
+        
+        # Heurística: Palabras clave comunes en datasets de investigación etiquetados por humanos
+        keywords_anotadores = ['annotator', 'rater', 'juez', 'anotador', 'coder', 'labeler']
+        cols_anotadores = [col for col in df.columns if any(kw in col.lower() for kw in keywords_anotadores)]
+        
+        # Si el radar detecta 2 o más columnas de jueces, activa la matriz matemática
+        if len(cols_anotadores) >= 2:
+            resumen["analisis_acuerdo_anotadores"]["columnas_detectadas"] = cols_anotadores
+            resumen["analisis_acuerdo_anotadores"]["pares_kappa"] = {}
+            
+            # Calculamos Kappa para cada par posible (A vs B, B vs C, A vs C)
+            for par in itertools.combinations(cols_anotadores, 2):
+                col_A, col_B = par
+                # Limpiamos filas donde alguno de los dos jueces no votó
+                df_pares = df[[col_A, col_B]].dropna()
+                
+                # Exigimos un mínimo estadístico de 10 muestras en común
+                if len(df_pares) >= 10: 
+                    try:
+                        # Forzamos conversión a string para alinear las clases correctamente
+                        kappa = cohen_kappa_score(df_pares[col_A].astype(str), df_pares[col_B].astype(str))
+                        nombre_par = f"{col_A} vs {col_B}"
+                        
+                        # Traducción semántica del tensor (Escala de Landis y Koch)
+                        if kappa < 0:
+                            fiabilidad = "Desacuerdo Sistemático"
+                        elif kappa <= 0.20:
+                            fiabilidad = "Acuerdo Pobre (Inviable)"
+                        elif kappa <= 0.40:
+                            fiabilidad = "Acuerdo Justo (Ruido Severo)"
+                        elif kappa <= 0.60:
+                            fiabilidad = "Acuerdo Moderado"
+                        elif kappa <= 0.80:
+                            fiabilidad = "Acuerdo Sustancial (Dataset Confiable)"
+                        else:
+                            fiabilidad = "Acuerdo Casi Perfecto"
+                            
+                        resumen["analisis_acuerdo_anotadores"]["pares_kappa"][nombre_par] = {
+                            "score_kappa": round(float(kappa), 3),
+                            "muestras_evaluadas_en_comun": len(df_pares),
+                            "diagnostico_fiabilidad": fiabilidad
+                        }
+                    except Exception:
+                        pass
+
         
         # ==========================================
         # 2. ANÁLISIS PREDICTIVO NUMÉRICO
