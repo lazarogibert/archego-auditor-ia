@@ -27,116 +27,183 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             resumen["alertas_criticas"].append("La columna 'pt_id' ha sido detectada. Esta columna es un identificador, carece de valor predictivo para la fase 1 y debe ser excluida del modelo.")
 
         # ==========================================
-        # 1. ANÁLISIS DE CATEGORÍAS Y TEXTO LIBRE (NLP EXTENDIDO)
+        # 1. ENRUTADOR UNIVERSAL NLP Y ANÁLISIS DE TEXTO
         # ==========================================
-        cols_categoricas = df.select_dtypes(include=['object', 'category']).columns
-        for col in cols_categoricas:
-            nulos = int(df[col].isnull().sum())
-            pct_nulos = round((nulos / len(df)) * 100, 2)
-            unicos = df[col].nunique()
+        cols_text_detectadas = []
+        for col in df.select_dtypes(include=['object', 'string']).columns:
+            if col == columna_objetivo:
+                continue
             
-            info_col = {
-                "valores_unicos": unicos,
-                "porcentaje_nulos_real": pct_nulos
-            }
+            # BLINDAJE 1: Detección Bifásica (Varianza o Longitud)
+            unicos_pct = df[col].nunique() / len(df)
+            muestra_textos = df[col].dropna().astype(str).head(100)
+            longitud_promedio = muestra_textos.apply(len).mean() if not muestra_textos.empty else 0
             
-            # Heurística: Si más del 50% es único, es texto libre (ensayos, notas) o un ID
-            if unicos > (len(df) * 0.5) and unicos > 1: 
-                info_col["tipo_inferido"] = "Texto Libre (NLP) o Identificador"
-                textos_brutos = df[col].dropna().astype(str)
-                
-                # Filtro de seguridad: Purgar strings compuestos solo de espacios (" ", "")
-                textos_validos = textos_brutos[textos_brutos.str.strip().astype(bool)]
-                
-                if not textos_validos.empty:
-                    # Cálculo de topología de tokens (Aproximación por espacios)
-                    conteo_palabras = textos_validos.apply(lambda x: len(x.split()))
-                    
-                    info_col["estadisticas_texto"] = {
-                        "longitud_promedio_caracteres": round(float(textos_validos.apply(len).mean()), 2),
-                        "palabras_promedio": round(float(conteo_palabras.mean()), 2),
-                        "percentil_50_palabras": int(conteo_palabras.quantile(0.50)),
-                        "percentil_90_palabras": int(conteo_palabras.quantile(0.90)),
-                        "percentil_99_palabras": int(conteo_palabras.quantile(0.99))
-                    }
-                    
-                    # Detección de Ruido NLP (Textos inútiles para modelado)
-                    textos_muy_cortos = int((conteo_palabras < 3).sum())
-                    info_col["alertas_nlp"] = {
-                        "textos_menores_a_3_palabras_pct": round(float(textos_muy_cortos / len(textos_validos)) * 100, 2)
-                    }
-                    
-                    # Diversidad Léxica (Type-Token Ratio - TTR)
-                    # Submuestreo extremo para no colapsar la RAM concatenando 50,000 ensayos
-                    if len(textos_validos) > 1000:
-                        muestra_ttr = textos_validos.sample(1000, random_state=42)
-                    else:
-                        muestra_ttr = textos_validos
-                        
-                    todas_las_palabras = " ".join(muestra_ttr.tolist()).lower().split()
-                    if len(todas_las_palabras) > 0:
-                        ttr = len(set(todas_las_palabras)) / len(todas_las_palabras)
-                        info_col["riqueza_lexica_ttr"] = round(float(ttr), 3)
+            # Es texto libre si: Tiene mucha varianza (>30%) O son párrafos/oraciones largas (>50 chars)
+            if (unicos_pct > 0.3 and longitud_promedio > 15) or (longitud_promedio > 50):
+                cols_text_detectadas.append(col)
+        
+        if cols_text_detectadas:
+            resumen["analisis_nlp"] = {"columnas_procesadas": cols_text_detectadas}
+            
+            if len(cols_text_detectadas) > 1:
+                df['texto_fusionado_nlp'] = df[cols_text_detectadas].fillna('').astype(str).agg(' '.join, axis=1)
+                col_analisis_texto = 'texto_fusionado_nlp'
+                resumen["analisis_nlp"]["tipo_entrada"] = "Multi-Texto (Cross-Encoder / Relaciones)"
             else:
-                info_col["tipo_inferido"] = "Categoría Estándar"
-                top_valores = df[col].value_counts(normalize=True).head(3).to_dict()
-                info_col["top_3_frecuencias_pct"] = {str(k): round(float(v) * 100, 2) for k, v in top_valores.items()}
-                
-            resumen["variables_categoricas"][col] = info_col
+                col_analisis_texto = cols_text_detectadas[0]
+                resumen["analisis_nlp"]["tipo_entrada"] = "Texto Único (Clasificación / Regresión)"
+
+            textos_validos = df[col_analisis_texto].dropna().astype(str)
+            textos_validos = textos_validos[textos_validos.str.strip().astype(bool)]
             
-            if unicos == 1:
-                resumen["alertas_criticas"].append(f"Varianza cero en '{col}'. Variable inútil para predicción.")
-       
+            if not textos_validos.empty:
+                conteo_palabras = textos_validos.apply(lambda x: len(x.split()))
+                resumen["analisis_nlp"]["topologia_tensores"] = {
+                    "palabras_promedio": round(float(conteo_palabras.mean()), 2),
+                    "percentil_50_palabras": int(conteo_palabras.quantile(0.50)),
+                    "percentil_90_palabras": int(conteo_palabras.quantile(0.90)),
+                    "percentil_99_palabras": int(conteo_palabras.quantile(0.99))
+                }
+                
+                objetivo_serie = df[columna_objetivo].dropna()
+                
+                # Caso 1: REGRESIÓN (Ej. ibm-qrank)
+                if pd.api.types.is_numeric_dtype(objetivo_serie) and objetivo_serie.nunique() > 15:
+                    resumen["analisis_nlp"]["tarea_inferida"] = "Regresión (Score Continuo)"
+                    corr_longitud = conteo_palabras.corr(objetivo_serie)
+                    resumen["analisis_nlp"]["correlacion_longitud_vs_score"] = round(float(corr_longitud), 3)
+                
+                # BLINDAJE 2: Detección Avanzada de SEQUENCE TAGGING (Ej. webis)
+                elif objetivo_serie.dtype == 'object':
+                    obj_str = objetivo_serie.astype(str)
+                    es_lista_estandar = obj_str.str.contains(r'\[|\,', regex=True).mean() > 0.5
+                    
+                    # Detección de tags separados por espacio (BIO format)
+                    palabras_por_fila = obj_str.head(100).apply(lambda x: len(x.split()))
+                    es_secuencia_espacios = palabras_por_fila.mean() > 3
+                    vocab_objetivo = len(set(" ".join(obj_str.head(100).tolist()).split()))
+                    
+                    if es_lista_estandar or (es_secuencia_espacios and vocab_objetivo < 50):
+                        resumen["analisis_nlp"]["tarea_inferida"] = "Segmentación de Tokens (Sequence Tagging)"
+                        todos_los_tags = obj_str.str.replace(r'\[|\]|\'|\"|\,', ' ', regex=True).str.split(expand=True).stack()
+                        dist_tags = todos_los_tags.value_counts(normalize=True).head(6).to_dict()
+                        resumen["analisis_nlp"]["distribucion_tags_individuales"] = {str(k): round(float(v)*100, 2) for k, v in dist_tags.items()}
+                    else:
+                        # Caso 3: CLASIFICACIÓN ESTÁNDAR (Ej. ukp, fs150t)
+                        resumen["analisis_nlp"]["tarea_inferida"] = "Clasificación de Textos"
+                else:
+                    resumen["analisis_nlp"]["tarea_inferida"] = "Clasificación de Textos"
+                    
+                # Riqueza Léxica (TTR)
+                muestra_ttr = textos_validos.sample(min(len(textos_validos), 1000), random_state=42)
+                todas_las_palabras = " ".join(muestra_ttr.tolist()).lower().split()
+                if len(todas_las_palabras) > 0:
+                    ttr = len(set(todas_las_palabras)) / len(todas_las_palabras)
+                    resumen["analisis_nlp"]["riqueza_lexica_ttr"] = round(float(ttr), 3)
+
+        # C. Variables Categóricas Tradicionales (Tópicos, Metadatos)
+        cols_categoricas = [c for c in df.select_dtypes(include=['object', 'category']).columns if c not in cols_text_detectadas and c != columna_objetivo]
+        for col in cols_categoricas:
+            unicos = df[col].nunique()
+            info_col = {"valores_unicos": unicos, "porcentaje_nulos_real": round((int(df[col].isnull().sum()) / len(df)) * 100, 2)}
+            top_valores = df[col].value_counts(normalize=True).head(3).to_dict()
+            info_col["top_3_frecuencias_pct"] = {str(k): round(float(v) * 100, 2) for k, v in top_valores.items()}
+            resumen["variables_categoricas"][col] = info_col
 
         # ==========================================
-        # 1.5 RADAR DE ACUERDO ENTRE ANOTADORES (KAPPA DE COHEN)
+        # 1.5 RADAR DE ACUERDO ENTRE ANOTADORES (ADAPTATIVO)
         # ==========================================
         resumen["analisis_acuerdo_anotadores"] = {}
         
-        # Heurística: Palabras clave comunes en datasets de investigación etiquetados por humanos
         keywords_anotadores = ['annotator', 'rater', 'juez', 'anotador', 'coder', 'labeler']
-        cols_anotadores = [col for col in df.columns if any(kw in col.lower() for kw in keywords_anotadores)]
+        cols_anotadores = [col for col in df.columns if any(kw in col.lower() for kw in keywords_anotadores) and col != columna_objetivo]
         
-        # Si el radar detecta 2 o más columnas de jueces, activa la matriz matemática
         if len(cols_anotadores) >= 2:
             resumen["analisis_acuerdo_anotadores"]["columnas_detectadas"] = cols_anotadores
-            resumen["analisis_acuerdo_anotadores"]["pares_kappa"] = {}
+            resumen["analisis_acuerdo_anotadores"]["pares_evaluados"] = {}
             
-            # Calculamos Kappa para cada par posible (A vs B, B vs C, A vs C)
+            tarea_inferida = resumen.get("analisis_nlp", {}).get("tarea_inferida", "Clasificación")
+            
             for par in itertools.combinations(cols_anotadores, 2):
                 col_A, col_B = par
-                # Limpiamos filas donde alguno de los dos jueces no votó
                 df_pares = df[[col_A, col_B]].dropna()
                 
-                # Exigimos un mínimo estadístico de 10 muestras en común
                 if len(df_pares) >= 10: 
                     try:
-                        # Forzamos conversión a string para alinear las clases correctamente
-                        kappa = cohen_kappa_score(df_pares[col_A].astype(str), df_pares[col_B].astype(str))
                         nombre_par = f"{col_A} vs {col_B}"
                         
-                        # Traducción semántica del tensor (Escala de Landis y Koch)
-                        if kappa < 0:
-                            fiabilidad = "Desacuerdo Sistemático"
-                        elif kappa <= 0.20:
-                            fiabilidad = "Acuerdo Pobre (Inviable)"
-                        elif kappa <= 0.40:
-                            fiabilidad = "Acuerdo Justo (Ruido Severo)"
-                        elif kappa <= 0.60:
-                            fiabilidad = "Acuerdo Moderado"
-                        elif kappa <= 0.80:
-                            fiabilidad = "Acuerdo Sustancial (Dataset Confiable)"
-                        else:
-                            fiabilidad = "Acuerdo Casi Perfecto"
+                        # ------------------------------------------------
+                        # RUTA 1: REGRESIÓN (Correlación con Blindaje NaN)
+                        # ------------------------------------------------
+                        if "Regresión" in tarea_inferida:
+                            s_A = pd.to_numeric(df_pares[col_A], errors='coerce').dropna()
+                            s_B = pd.to_numeric(df_pares[col_B], errors='coerce').dropna()
+                            idx_comunes = s_A.index.intersection(s_B.index)
                             
-                        resumen["analisis_acuerdo_anotadores"]["pares_kappa"][nombre_par] = {
-                            "score_kappa": round(float(kappa), 3),
-                            "muestras_evaluadas_en_comun": len(df_pares),
-                            "diagnostico_fiabilidad": fiabilidad
-                        }
+                            if len(idx_comunes) >= 10:
+                                val_A, val_B = s_A[idx_comunes], s_B[idx_comunes]
+                                
+                                # Prevención de División por Cero (Varianza 0)
+                                if val_A.std() == 0 or val_B.std() == 0:
+                                    corr = 1.0 if val_A.equals(val_B) else 0.0
+                                else:
+                                    corr = val_A.corr(val_B)
+                                    if pd.isna(corr): corr = 0.0
+                                    
+                                fiabilidad = "Acuerdo Fuerte" if corr > 0.7 else ("Acuerdo Moderado" if corr > 0.4 else "Acuerdo Pobre / Ruido")
+                                resumen["analisis_acuerdo_anotadores"]["pares_evaluados"][nombre_par] = {
+                                    "metrica_usada": "Correlacion_Pearson",
+                                    "score": round(float(corr), 3),
+                                    "diagnostico_fiabilidad": fiabilidad
+                                }
+                                
+                        # ------------------------------------------------
+                        # RUTA 2: SEGMENTACIÓN DE TOKENS (Aislamiento por Fila)
+                        # ------------------------------------------------
+                        elif "Segmentación" in tarea_inferida:
+                            all_t_A, all_t_B = [], []
+                            
+                            for idx, row in df_pares.iterrows():
+                                # Limpieza severa de caracteres de listas/tuplas
+                                t_A = str(row[col_A]).replace('[', '').replace(']', '').replace("'", '').replace('"', '').replace(',', ' ').split()
+                                t_B = str(row[col_B]).replace('[', '').replace(']', '').replace("'", '').replace('"', '').replace(',', ' ').split()
+                                
+                                # Aislamiento de error: emparejamos hasta donde ambas listas coincidan en ESA oración
+                                min_t = min(len(t_A), len(t_B))
+                                all_t_A.extend(t_A[:min_t])
+                                all_t_B.extend(t_B[:min_t])
+                                
+                            if len(all_t_A) > 50:
+                                kappa = cohen_kappa_score(all_t_A, all_t_B)
+                                resumen["analisis_acuerdo_anotadores"]["pares_evaluados"][nombre_par] = {
+                                    "metrica_usada": "Kappa_Cohen_por_Token",
+                                    "score": round(float(kappa), 3),
+                                    "tokens_evaluados": len(all_t_A),
+                                    "diagnostico_fiabilidad": "Confiable" if kappa > 0.60 else "Ambigüedad Severa"
+                                }
+                                
+                        # ------------------------------------------------
+                        # RUTA 3: CLASIFICACIÓN ESTÁNDAR
+                        # ------------------------------------------------
+                        else:
+                            kappa = cohen_kappa_score(df_pares[col_A].astype(str), df_pares[col_B].astype(str))
+                            
+                            if kappa < 0: fiabilidad = "Desacuerdo Sistemático"
+                            elif kappa <= 0.20: fiabilidad = "Acuerdo Pobre (Inviable)"
+                            elif kappa <= 0.40: fiabilidad = "Acuerdo Justo (Ruido Severo)"
+                            elif kappa <= 0.60: fiabilidad = "Acuerdo Moderado"
+                            elif kappa <= 0.80: fiabilidad = "Acuerdo Sustancial (Dataset Confiable)"
+                            else: fiabilidad = "Acuerdo Casi Perfecto"
+                                
+                            resumen["analisis_acuerdo_anotadores"]["pares_evaluados"][nombre_par] = {
+                                "metrica_usada": "Kappa_Cohen_Documento",
+                                "score": round(float(kappa), 3),
+                                "muestras_evaluadas": len(df_pares),
+                                "diagnostico_fiabilidad": fiabilidad
+                            }
                     except Exception:
                         pass
-
         
         # ==========================================
         # 2. ANÁLISIS PREDICTIVO NUMÉRICO
