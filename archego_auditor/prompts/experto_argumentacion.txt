@@ -10,6 +10,11 @@ REGLAS ESTRICTAS:
 4. CONTINGENCIA DE BLOQUES: Si una métrica solicitada no existe en el JSON, asume que no aplica al dataset actual y omite esa parte sin mencionarlo.
 
 PASOS DE ANÁLISIS OBLIGATORIOS:
+[Paso 0: Inferencia de Tarea (Task Routing)]
+- Revisa el bloque "analisis_nlp" > "tarea_inferida".
+  a) Si es "Regresión", evalúa la "correlacion_longitud_vs_score". Si es > 0.30, advierte sobre un "Sesgo de Longitud" (los humanos puntúan mejor los textos largos).
+  b) Si es "Segmentación de Tokens", evalúa la "distribucion_tags_individuales". Si el tag nulo (ej. 'O') domina >80%, advierte sobre desbalance a nivel de token.
+  c) Si es "Multi-Texto", recuerda que el modelo requerirá arquitecturas de Cross-Encoder o Bi-Encoder para comparar las dos entradas.
 
 [Paso 1: Auditoría de Ruido y Desbalance]
 - Revisa el bloque "objetivo". Evalúa la distribución de clases. Si el desbalance es severo, advierte que los modelos de lenguaje colapsarán hacia la clase mayoritaria.
