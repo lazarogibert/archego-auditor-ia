@@ -11,7 +11,7 @@ st.set_page_config(page_title="Archego | Auditor B2B", page_icon="⚡", layout="
 API_KEY = os.environ.get("GEMINI_API_KEY", "TU_API_KEY_AQUI")
 
 # ==========================================
-# 1. CARGA DE PROMPTS (BLINDADA)
+# 1. CARGA DE PROMPTS
 # ==========================================
 AGENTES = {
     "Arquitecto ML (Datos Médicos)": "experto_medicina",
@@ -19,14 +19,13 @@ AGENTES = {
 }
 
 def cargar_prompt(nombre_archivo):
-    """Carga el prompt protegiendo contra archivos inexistentes."""
     try:
         directorio_base = os.path.dirname(os.path.abspath(__file__))
         ruta = os.path.join(directorio_base, "prompts", f"{nombre_archivo}.txt")
         with open(ruta, "r", encoding="utf-8") as archivo:
             return archivo.read()
     except FileNotFoundError:
-        return f"ERROR_PROMPT_FALTANTE: No se encontró el archivo '{nombre_archivo}.txt' en la carpeta 'prompts'."
+        return f"ERROR_PROMPT_FALTANTE: No se encontró el archivo '{nombre_archivo}.txt'."
     except Exception as e:
         return f"ERROR_SISTEMA: {str(e)}"
 
@@ -34,7 +33,6 @@ def cargar_prompt(nombre_archivo):
 # 2. MOTOR VISUAL: RENDERIZADO ADAPTATIVO (Plotly)
 # ==========================================
 def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
-    """Renderiza gráficos dinámicos protegiendo la memoria y adaptándose a la tarea."""
     try:
         resumen = json.loads(json_string)
     except Exception as e:
@@ -97,6 +95,7 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
         df_imp = pd.DataFrame(list(dict_relevancia.items()), columns=['Predictor', 'Score'])
         df_imp['Predictor_Label'] = df_imp['Predictor'].astype(str).apply(lambda x: x[:30] + "..." if len(x) > 30 else x)
         df_imp['Magnitud'] = df_imp['Score'].abs() if es_correlacion else df_imp['Score']
+        # Limitamos a 15 para evitar colapso vertical
         df_imp = df_imp.sort_values(by='Magnitud', ascending=True).tail(15)
 
         fig_imp = px.bar(
@@ -110,6 +109,36 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
     else:
         st.info("No se detectaron predictores numéricos tabulares con señal matemática fuerte.")
 
+    # --- B.5 ACUERDO ENTRE ANOTADORES ---
+    acuerdo_data = resumen.get("analisis_acuerdo_anotadores", {})
+    pares_evaluados = acuerdo_data.get("pares_evaluados", {})
+    
+    if pares_evaluados:
+        st.markdown("---")
+        st.subheader("🤝 Fiabilidad Humana (Inter-Annotator Agreement)")
+        
+        df_acuerdo = pd.DataFrame([
+            {"Par de Jueces": par, "Score": datos["score"], "Métrica": datos["metrica_usada"], "Diagnóstico": datos["diagnostico_fiabilidad"]}
+            for par, datos in pares_evaluados.items()
+        ]).sort_values(by="Score", ascending=True)
+        
+        rango_x = [-1.0, 1.0] if any("Pearson" in str(m) for m in df_acuerdo["Métrica"]) else [0.0, 1.0]
+        
+        # [BLINDAJE VISUAL] Altura dinámica para múltiples jueces
+        altura_dinamica_acuerdo = max(300, len(df_acuerdo) * 35)
+
+        fig_acuerdo = px.bar(
+            df_acuerdo, x="Score", y="Par de Jueces", orientation="h",
+            color="Score", color_continuous_scale="RdYlGn", text_auto=".2f",
+            hover_data={"Diagnóstico": True, "Métrica": True}
+        )
+        fig_acuerdo.add_vline(x=0.60, line_dash="dash", line_color="black", annotation_text="Umbral Aceptable (>0.60)")
+        fig_acuerdo.update_layout(
+            height=altura_dinamica_acuerdo, 
+            xaxis=dict(range=rango_x), coloraxis_showscale=False, margin=dict(l=0, r=0, t=10, b=0)
+        )
+        st.plotly_chart(fig_acuerdo, use_container_width=True)
+
     # --- C. MAPA DE RUIDO Y ANOMALÍAS ---
     st.markdown("---")
     st.subheader("🌪️ Mapa de Ruido y Topología de Tensores")
@@ -122,16 +151,22 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
             lista_ruido = []
             for col, stats in outliers_data.items():
                 pct_iqr, pct_z = float(stats.get("porcentaje_outliers_iqr", 0)), float(stats.get("porcentaje_outliers_zscore", 0))
+                
+                base = stats.get("estadisticas_base", {})
+                skew = base.get("asimetria_skewness", 0.0)
+                kurt = base.get("curtosis_kurtosis", 0.0)
+                escasez = base.get("escasez_ceros_pct", 0.0)
+
                 pct_z_real = min(100.0, pct_z)
                 pct_iqr_solo = min(100.0 - pct_z_real, max(0.0, pct_iqr - pct_z))
                 pct_limpio = max(0.0, 100.0 - pct_iqr_solo - pct_z_real)
                 col_label = col[:30] + "..." if len(col) > 30 else col
 
-                lista_ruido.extend([
-                    {"Variable_Label": col_label, "Variable": col, "Tipo": "Datos Limpios", "Porcentaje": pct_limpio},
-                    {"Variable_Label": col_label, "Variable": col, "Tipo": "Asimetría (IQR)", "Porcentaje": pct_iqr_solo},
-                    {"Variable_Label": col_label, "Variable": col, "Tipo": "Corrupción (Z-Score)", "Porcentaje": pct_z_real}
-                ])
+                for tipo, pct in [("Datos Limpios", pct_limpio), ("Asimetría (IQR)", pct_iqr_solo), ("Corrupción (Z-Score)", pct_z_real)]:
+                    lista_ruido.append({
+                        "Variable_Label": col_label, "Variable": col, "Tipo": tipo, "Porcentaje": pct,
+                        "Skewness": skew, "Curtosis": kurt, "Ceros (%)": escasez
+                    })
 
             df_ruido = pd.DataFrame(lista_ruido)
             vars_con_ruido = df_ruido[df_ruido["Tipo"] != "Datos Limpios"].groupby("Variable_Label")["Porcentaje"].sum()
@@ -139,13 +174,21 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
             
             if vars_a_graficar:
                 df_ruido = df_ruido[df_ruido["Variable_Label"].isin(vars_a_graficar)]
+                
+                # [BLINDAJE VISUAL] Evitar el "Efecto Acordeón". 35px de altura por cada variable.
+                altura_dinamica_ruido = max(350, len(vars_a_graficar) * 35)
+                
                 fig_ruido = px.bar(
                     df_ruido, x="Porcentaje", y="Variable_Label", color="Tipo", orientation="h",
-                    hover_data={"Variable": True, "Variable_Label": False},
+                    hover_data={"Variable": True, "Variable_Label": False, "Skewness": True, "Curtosis": True, "Ceros (%)": True},
                     color_discrete_map={"Datos Limpios": "#2ecc71", "Asimetría (IQR)": "#f1c40f", "Corrupción (Z-Score)": "#e74c3c"},
                     category_orders={"Tipo": ["Datos Limpios", "Asimetría (IQR)", "Corrupción (Z-Score)"]}
                 )
-                fig_ruido.update_layout(xaxis_title="Porcentaje de Filas (%)", yaxis_title="", barmode='stack', xaxis=dict(range=[0, 100]), margin=dict(l=0, r=0, t=10, b=0))
+                fig_ruido.update_layout(
+                    height=altura_dinamica_ruido, # Expansión vertical segura
+                    xaxis_title="Porcentaje de Filas (%)", yaxis_title="", barmode='stack', 
+                    xaxis=dict(range=[0, 100]), margin=dict(l=0, r=0, t=10, b=0)
+                )
                 st.plotly_chart(fig_ruido, use_container_width=True)
             else: st.success("Variables numéricas libres de valores atípicos severos.")
         else: st.success("Variables tabulares 100% libres de valores atípicos severos.")
@@ -164,50 +207,79 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
         
         if cols_texto:
             df_noise_nlp = df[cols_texto].dropna(how='all').copy()
-            if len(df_noise_nlp) > 10000: df_noise_nlp = df_noise_nlp.sample(10000, random_state=42)
+            if len(df_noise_nlp) > 10000: 
+                df_noise_nlp = df_noise_nlp.sample(10000, random_state=42)
 
-            col_calc = '__sys_texto_analisis__'
-            if len(cols_texto) > 1:
-                df_noise_nlp[col_calc] = df_noise_nlp[cols_texto].fillna('').astype(str).agg(' '.join, axis=1)
-                titulo_grafico = f"Longitud Combinada ({len(cols_texto)} cols)"
-            else:
-                df_noise_nlp[col_calc] = df_noise_nlp[cols_texto[0]].astype(str)
-                titulo_grafico = f"Longitud en '{cols_texto[0]}'"
+            # [BLINDAJE VISUAL] Truncamiento de pestañas para evitar desbordamiento horizontal
+            nombres_pestanas = [c[:20] + "..." if len(c) > 20 else c for c in cols_texto]
+            
+            st.info(f"Se detectaron {len(cols_texto)} campos de texto.")
+            pestañas = st.tabs(nombres_pestanas)
 
-            if not df_noise_nlp.empty:
-                col_tokens, col_vocab, col_ttr = '__sys_tokens__', '__sys_vocab__', '__sys_ttr__'
-                df_noise_nlp[col_tokens] = df_noise_nlp[col_calc].apply(lambda x: len(x.split()))
-                
-                fig_nlp_noise = px.histogram(df_noise_nlp, x=col_tokens, nbins=50, marginal="box", title=f"Riesgo de Truncamiento: {titulo_grafico}", color_discrete_sequence=['#9b59b6'])
-                fig_nlp_noise.add_vline(x=512, line_dash="dash", line_color="red")
-                fig_nlp_noise.update_layout(xaxis_title="Tokens Aprox.", yaxis_title="Documentos", margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_nlp_noise, use_container_width=True)
-                
-                st.markdown("---")
-                st.subheader("🕵️ Huella Léxica (Type-Token Ratio)")
-                df_noise_nlp[col_vocab] = df_noise_nlp[col_calc].apply(lambda x: len(set(x.split())))
-                df_noise_nlp[col_ttr] = np.where(df_noise_nlp[col_tokens] > 0, df_noise_nlp[col_vocab] / df_noise_nlp[col_tokens], 0.0)
-                
-                fig_ttr = px.scatter(df_noise_nlp, x=col_tokens, y=col_ttr, opacity=0.4, color_discrete_sequence=['#e67e22'], title="Huella Léxica (TTR)", hover_data={col_calc: False, col_vocab: False})
-                fig_ttr.add_hline(y=0.25, line_dash="dot", line_color="red")
-                fig_ttr.update_layout(xaxis_title="Tokens", yaxis_title="TTR", yaxis=dict(range=[-0.05, 1.05]), margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_ttr, use_container_width=True)
-            else: st.info("Textos vacíos o ilegibles.")
+            for idx, col_txt in enumerate(cols_texto):
+                with pestañas[idx]:
+                    st.markdown(f"**Analizando campo:** `{col_txt}`")
+                    stats_nlp = resumen.get("analisis_nlp", {}).get("columnas_analizadas", {}).get(col_txt, {})
+                    ttr_val = stats_nlp.get("riqueza_lexica_ttr", 0)
+                    lon_palabra = stats_nlp.get("longitud_promedio_palabra", 0)
+                    
+                    kpi1, kpi2, kpi3 = st.columns(3)
+                    kpi1.metric("Riqueza Léxica (TTR)", f"{ttr_val:.2f}", "Spam / Bots" if ttr_val < 0.2 else "Saludable", delta_color="inverse" if ttr_val < 0.2 else "normal")
+                    kpi2.metric("Complejidad Morfológica", f"{lon_palabra:.1f} lts/pal", "Académico" if lon_palabra > 6 else "Coloquial", delta_color="off")
+                    
+                    if "correlacion_longitud_vs_score" in stats_nlp:
+                        corr_len = stats_nlp.get("correlacion_longitud_vs_score", 0)
+                        kpi3.metric("Sesgo Longitud (Corr)", f"{corr_len:.2f}", "Peligro" if abs(corr_len) > 0.3 else "Neutral", delta_color="inverse" if abs(corr_len) > 0.3 else "normal")
+                    
+                    st.markdown("---")
+                    df_col = df_noise_nlp[[col_txt]].dropna().copy()
+                    
+                    if not df_col.empty:
+                        col_tokens, col_vocab, col_ttr = f'__tks_{idx}__', f'__voc_{idx}__', f'__ttr_{idx}__'
+                        
+                        df_col[col_tokens] = df_col[col_txt].astype(str).apply(lambda x: len(x.split()))
+                        
+                        # [BLINDAJE] Evitar dibujar gráficos de texto si todas las secuencias quedaron vacías tras split
+                        if df_col[col_tokens].sum() > 0:
+                            fig_nlp_noise = px.histogram(
+                                df_col, x=col_tokens, nbins=50, marginal="box", 
+                                title=f"Riesgo de Truncamiento de Secuencias", 
+                                color_discrete_sequence=['#9b59b6']
+                            )
+                            fig_nlp_noise.add_vline(x=512, line_dash="dash", line_color="red", annotation_text="Límite BERT (512)", annotation_position="top right")
+                            fig_nlp_noise.update_layout(xaxis_title="Tokens Aprox.", yaxis_title="Documentos", margin=dict(l=0, r=0, t=30, b=0))
+                            st.plotly_chart(fig_nlp_noise, use_container_width=True)
+                            
+                            st.markdown("---")
+                            df_col[col_vocab] = df_col[col_txt].astype(str).apply(lambda x: len(set(x.split())))
+                            df_col[col_ttr] = np.where(df_col[col_tokens] > 0, df_col[col_vocab] / df_col[col_tokens], 0.0)
+                            
+                            fig_ttr = px.scatter(
+                                df_col, x=col_tokens, y=col_ttr, opacity=0.4, 
+                                color_discrete_sequence=['#e67e22'], 
+                                title=f"Dispersión Semántica", 
+                                hover_data={col_txt: False, col_vocab: False}
+                            )
+                            fig_ttr.add_hline(y=0.25, line_dash="dot", line_color="red", annotation_text="Peligro: Spam / Bots (TTR < 0.25)", annotation_position="bottom right")
+                            fig_ttr.update_layout(xaxis_title="Tokens", yaxis_title="TTR", yaxis=dict(range=[-0.05, 1.05]), margin=dict(l=0, r=0, t=30, b=0))
+                            st.plotly_chart(fig_ttr, use_container_width=True)
+                        else:
+                            st.warning("Los textos procesados no contienen palabras válidas medibles.")
+                    else: 
+                        st.warning(f"La columna quedó vacía tras la limpieza de nulos.")
         else: st.info("No hay columnas tabulares o de texto válidas para mapear ruido.")
 
 
 # ==========================================
-# 3. ESTRUCTURA PRINCIPAL DE LA APP (UI BLINDADA)
+# 3. ESTRUCTURA PRINCIPAL DE LA APP (UI)
 # ==========================================
 def main():
     st.title("⚡ Archego | Auditor de Datasets")
     st.markdown("Auditor de IA estricto para modelos centralizados y descentralizados.")
 
-    # Memoria de Sesión
     if 'estado_auditoria' not in st.session_state:
         st.session_state.estado_auditoria = False
 
-    # Verificación temprana de la API Key (Fail Fast)
     if API_KEY == "TU_API_KEY_AQUI" or not API_KEY:
         st.error("🚨 **ALERTA DE SISTEMA:** No se ha configurado la clave 'GEMINI_API_KEY'. Por favor, configúrala en las variables de entorno.")
         st.stop()
@@ -218,16 +290,13 @@ def main():
         st.subheader("1. Configuración")
         agente_seleccionado = st.selectbox("Especialidad del Agente:", list(AGENTES.keys()))
         
-        # Leemos los archivos primero para poder extraer las columnas reales
         archivos_csv = st.file_uploader("Dataset(s) (.csv)", type=["csv"], accept_multiple_files=True)
         
-        # Variables por defecto
         columna_objetivo = None
         columna_nodo_final = ""
         df_global = None
 
         if archivos_csv:
-            # Consolidamos los dataframes al vuelo para alimentar los dropdowns
             try:
                 lista_dfs = []
                 for archivo in archivos_csv:
@@ -243,11 +312,9 @@ def main():
                     
                 df_global = pd.concat(lista_dfs, ignore_index=True)
                 
-                # [BLINDAJE UI] Usamos selectbox en lugar de text_input para evitar errores humanos
                 columnas_disponibles = list(df_global.columns)
                 columna_objetivo = st.selectbox("🎯 Columna Objetivo (Obligatorio):", columnas_disponibles)
                 
-                # Dinámica del Nodo
                 if len(archivos_csv) > 1:
                     st.info("🌐 Nodo Multicéntrico detectado automáticamente por origen de archivo.")
                     columna_nodo_final = 'origen_archivo_automatico'
@@ -260,7 +327,6 @@ def main():
                 st.error(f"Error al leer los archivos: {e}")
                 st.stop()
         
-        # Botón bloqueado si no hay archivos
         if st.button("🚀 Ejecutar Auditoría", type="primary", use_container_width=True, disabled=not archivos_csv):
             st.session_state.estado_auditoria = True
 
@@ -269,12 +335,8 @@ def main():
         
         if st.session_state.estado_auditoria and df_global is not None and columna_objetivo:
             try:
-                # --- NÚCLEO DE LA APLICACIÓN ---
                 with st.spinner("🤖 Analizando topología y consultando a Gemini..."):
-                    # 1. Extracción Matemática
                     json_estadisticas = procesar_df_a_json(df_global, columna_objetivo, columna_nodo_final)
-                    
-                    # 2. Llamada a Gemini (Protegida)
                     prompt_maestro = cargar_prompt(AGENTES[agente_seleccionado])
                     
                     if prompt_maestro.startswith("ERROR"):
@@ -290,11 +352,9 @@ def main():
                         contents=prompt_final
                     )
                 
-                # Renderizado del reporte LLM
                 st.markdown("### 📄 Reporte Técnico (IA)")
                 st.markdown(respuesta.text)
                 
-                # Renderizado de la capa visual (Plotly)
                 renderizar_graficos_auditoria(json_estadisticas, df_global, columna_objetivo)
                 
                 st.markdown("---")
