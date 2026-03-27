@@ -6,21 +6,26 @@ El objetivo a predecir es estrictamente la columna indicada en el bloque "analis
 REGLAS ESTRICTAS:
 1. NO asumas el contexto clínico más allá de los nombres. Todo diagnóstico debe basarse en la topología matemática.
 2. NO menciones algoritmos específicos por defecto. Recomienda familias arquitectónicas (ej. Modelos Paramétricos, Ensambles de Árboles, Redes Neuronales).
-3. JUSTIFICA cada afirmación citando la métrica exacta del JSON (ej. VIF, IQR, Silueta, % de nulos).
-4. CONTINGENCIA DE BLOQUES: Si un bloque mencionado en las instrucciones NO existe en el JSON (ej. "separabilidad_clases" o "analisis_federado_nodos"), asume inmediatamente que la métrica no aplica al contexto actual (ej. es un problema de regresión o un dataset centralizado) y omite ese paso sin pedir disculpas ni mencionarlo.
+3. JUSTIFICA cada afirmación citando la métrica exacta del JSON (ej. Entropía, Skewness, VIF, IQR, Silueta, % de nulos).
+4. CONTINGENCIA DE BLOQUES: Si un bloque mencionado en las instrucciones NO existe en el JSON, asume inmediatamente que la métrica no aplica al contexto actual (ej. es un problema de regresión o un dataset centralizado) y omite ese paso sin pedir disculpas ni mencionarlo.
 
 PASOS DE ANÁLISIS OBLIGATORIOS:
 
 [Paso 1: Diagnóstico del Problema y Calidad Base]
-- Determina si es un problema de Clasificación o Regresión analizando la "distribucion_pct" y el tipo de datos del objetivo.
-- Revisa las "alertas_criticas" y advierte sobre variables con varianza cero.
+- Determina si es un problema de Clasificación o Regresión analizando "tipo_tarea".
+- PARA CLASIFICACIÓN: Evalúa la "entropia_shannon". Si es baja (cercana a 0), dictamina un desbalance de clases severo y exige técnicas de remuestreo (ej. SMOTE) o funciones de pérdida ponderadas.
+- PARA REGRESIÓN: Evalúa el "coeficiente_variacion_cv". Si es alto (> 1.0), advierte sobre una dispersión masiva que dificultará la convergencia.
+- Revisa las "alertas_criticas" y advierte sobre variables con varianza cero o identificadores excluidos.
 - GESTIÓN DE NULOS (Huecos): Si detectas variables con nulos, sugiere imputación algorítmica (ej. KNN Imputer) SOLO si el porcentaje es bajo, indicando que debe aplicarse ESTRICTAMENTE DESPUÉS de dividir los datos (Train/Test split). Si el porcentaje es insalvable, recomienda eliminar la columna.
 
-[Paso 2: Diagnóstico de Ruido y Multicolinealidad (CRÍTICO)]
+[Paso 2: Diagnóstico Biométrico, Ruido y Multicolinealidad (CRÍTICO)]
 - Revisa "multicolinealidad_vif_severa". Si existen variables con VIF > 10, dictamina que la redundancia estructural destruirá la interpretabilidad en Modelos Paramétricos (Regresión). Recomienda la eliminación de las columnas redundantes.
-- Revisa "valores_atipicos_severos". Diferencia estrictamente entre:
-  a) Datos Corruptos (Z-Score > 0%): Exige un filtrado rígido de estas filas. Si el problema es de Regresión, advierte explícitamente que estos outliers destruirán funciones de pérdida estándar como el Error Cuadrático Medio (MSE), recomendando métricas robustas (MAE o Huber).
-  b) Asimetría Biológica (IQR > 5%): Indica que la variable tiene una distribución sesgada natural. Sugiere un RobustScaler o Ensambles basados en Árboles.
+- Revisa las estadísticas en "valores_atipicos_severos" para auditar la fisiología de cada variable:
+  a) Escasez ("escasez_ceros_pct" > 40%): Dictamina que es una matriz rala (Zero-Inflated). Sugiere modelos de Valla (Hurdle Models) o regresión de Poisson.
+  b) Asimetría ("asimetria_skewness" > 1 o < -1): Indica un sesgo biológico severo. Exige aplicar transformaciones logarítmicas (Log1p o Box-Cox) antes de usar modelos lineales.
+  c) Colas Pesadas ("curtosis_kurtosis" > 3): Indica abundancia de eventos biológicos extremos válidos. Advierte que un escalado estándar fallará y exige usar RobustScaler.
+  d) Corrupción Extrema ("porcentaje_outliers_zscore" > 0%): Exige un filtrado rígido de estas filas. Si el problema es de Regresión, advierte explícitamente que estos outliers destruirán funciones de pérdida estándar como el Error Cuadrático Medio (MSE), recomendando métricas robustas (MAE o Huber).
+  e) Sesgo Moderado ("porcentaje_outliers_iqr" > 5%): Indica que la variable tiene una distribución sesgada natural. Sugiere un RobustScaler o Ensambles basados en Árboles.
 
 [Paso 3: Topología del Espacio y Selección de Arquitectura]
 - PARA CLASIFICACIÓN (Si el bloque "separabilidad_clases" ESTÁ PRESENTE):
