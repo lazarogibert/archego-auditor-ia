@@ -56,12 +56,26 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             if es_regresion_tabular:
                 media = float(objetivo_serie.mean())
                 std = float(objetivo_serie.std())
+                min_val = float(objetivo_serie.min())
+                max_val = float(objetivo_serie.max())
+                
+                # [NUEVO BLINDAJE] Detección Matemática de Distribución Bimodal (Forma de U)
+                rango = max_val - min_val
+                es_bimodal = False
+                if rango > 0:
+                    # Si más del 60% de los datos están concentrados en el 15% inferior y superior...
+                    extremo_inf = objetivo_serie[objetivo_serie <= min_val + 0.15 * rango].count()
+                    extremo_sup = objetivo_serie[objetivo_serie >= max_val - 0.15 * rango].count()
+                    if (extremo_inf + extremo_sup) / len(objetivo_serie) > 0.60:
+                        es_bimodal = True
+
                 resumen["analisis_predictivo"]["objetivo"]["estadisticas_objetivo"] = {
                     "media": round(media, 3),
                     "desviacion_estandar": round(std, 3),
-                    "minimo": round(float(objetivo_serie.min()), 3),
-                    "maximo": round(float(objetivo_serie.max()), 3),
-                    "coeficiente_variacion_cv": round(std / media, 3) if media != 0 else 0.0
+                    "minimo": round(min_val, 3),
+                    "maximo": round(max_val, 3),
+                    "coeficiente_variacion_cv": round(std / media, 3) if media != 0 else 0.0,
+                    "distribucion_bimodal_en_U": es_bimodal # Inyectamos la alerta al JSON
                 }
             else:
                 dist = objetivo_serie.value_counts(normalize=True)
