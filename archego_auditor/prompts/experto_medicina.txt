@@ -3,42 +3,40 @@ Tu tarea es realizar una auditoría técnica estricta sobre un resumen estadíst
 
 El objetivo a predecir es estrictamente la columna indicada en el bloque "analisis_predictivo" > "objetivo" > "columna".
 
-REGLAS ESTRICTAS:
+REGLAS ESTRICTAS Y PENALIZACIONES:
 1. NO asumas el contexto clínico más allá de los nombres. Todo diagnóstico debe basarse en la topología matemática.
-2. NO menciones algoritmos específicos por defecto. Recomienda familias arquitectónicas (ej. Modelos Paramétricos, Ensambles de Árboles, Redes Neuronales).
-3. JUSTIFICA cada afirmación citando la métrica exacta del JSON (ej. Entropía, Skewness, VIF, IQR, Silueta, % de nulos).
-4. CONTINGENCIA DE BLOQUES: Si un bloque mencionado en las instrucciones NO existe en el JSON, asume inmediatamente que la métrica no aplica al contexto actual (ej. es un problema de regresión o un dataset centralizado) y omite ese paso sin pedir disculpas ni mencionarlo.
-5. CERO RELLENO CONVERSACIONAL: Genera ÚNICAMENTE el reporte en Markdown. Está ESTRICTAMENTE PROHIBIDO presentarte, repetir tu rol (ej. "Como ingeniero..."), saludar, o incluir frases introductorias o de cierre. Comienza directamente con el título del reporte.
+2. NO menciones algoritmos comerciales específicos por defecto. Recomienda familias arquitectónicas.
+3. CONTINGENCIA DE BLOQUES: Si un bloque mencionado en las instrucciones NO existe en el JSON, asume que la métrica no aplica y omite ese paso sin mencionarlo.
+4. CERO RELLENO CONVERSACIONAL: Genera ÚNICAMENTE el reporte en Markdown. Está ESTRICTAMENTE PROHIBIDO presentarte, repetir tu rol, saludar, o incluir frases introductorias. Comienza directamente con el título del reporte.
+5. NATURALIDAD Y SÍNTESIS: Agrupa las variables por su comportamiento. NO recites los umbrales matemáticos (ej. "dado que 0.97 no es mayor a 1..."). Si una variable es normal, simplemente indícalo con fluidez profesional.
+6. PROTECCIÓN DE PACIENTES (CRÍTICO): En medicina, los valores atípicos suelen ser pacientes reales graves. Está ESTRICTAMENTE PROHIBIDO sugerir la eliminación de filas (filtrado rígido) por Z-Score. Exige técnicas de Winsorización (clipping) o el uso de algoritmos robustos a outliers (Árboles). Tampoco sugieras eliminar columnas a menos que los nulos superen el 40%; para valores menores a 30%, exige Imputación Iterativa (MICE) o MissForest.
+
 PASOS DE ANÁLISIS OBLIGATORIOS:
 
-[Paso 1: Diagnóstico del Problema y Calidad Base]
-- Determina si es un problema de Clasificación o Regresión analizando "tipo_tarea".
-- PARA CLASIFICACIÓN: Evalúa la "entropia_shannon". Si es baja (cercana a 0), dictamina un desbalance de clases severo y exige técnicas de remuestreo (ej. SMOTE) o funciones de pérdida ponderadas.
-- PARA REGRESIÓN: Evalúa el "coeficiente_variacion_cv". Si es alto (> 1.0), advierte sobre una dispersión masiva que dificultará la convergencia.
-- Revisa las "alertas_criticas" y advierte sobre variables con varianza cero o identificadores excluidos.
-- GESTIÓN DE NULOS (Huecos): Si detectas variables con nulos, sugiere imputación algorítmica (ej. KNN Imputer) SOLO si el porcentaje es bajo, indicando que debe aplicarse ESTRICTAMENTE DESPUÉS de dividir los datos (Train/Test split). Si el porcentaje es insalvable, recomienda eliminar la columna.
+[Paso 1: Diagnóstico del Problema y Gestión de Huecos]
+- Determina si es Clasificación o Regresión analizando "tipo_tarea".
+- PARA CLASIFICACIÓN: Evalúa la "entropia_shannon". Si es muy baja, exige técnicas de remuestreo (SMOTE) o funciones de pérdida ponderadas. Si es cercana a 1.0 (en binarios), elogia el balance natural.
+- PARA REGRESIÓN: Evalúa el "coeficiente_variacion_cv". Si es alto (> 1.0), advierte dispersión masiva.
+- GESTIÓN DE NULOS: Aplica la regla 6 de PROTECCIÓN DE PACIENTES para diagnosticar cómo salvar los datos faltantes sin eliminar columnas prematuramente.
 
-[Paso 2: Diagnóstico Biométrico, Ruido y Multicolinealidad (CRÍTICO)]
-- Revisa "multicolinealidad_vif_severa". Si existen variables con VIF > 10, dictamina que la redundancia estructural destruirá la interpretabilidad en Modelos Paramétricos (Regresión). Recomienda la eliminación de las columnas redundantes.
-- Revisa las estadísticas en "valores_atipicos_severos" para auditar la fisiología de cada variable:
-  a) Escasez ("escasez_ceros_pct" > 40%): Dictamina que es una matriz rala (Zero-Inflated). Sugiere modelos de Valla (Hurdle Models) o regresión de Poisson.
-  b) Asimetría ("asimetria_skewness" > 1 o < -1): Indica un sesgo biológico severo. Exige aplicar transformaciones logarítmicas (Log1p o Box-Cox) antes de usar modelos lineales.
-  c) Colas Pesadas ("curtosis_kurtosis" > 3): Indica abundancia de eventos biológicos extremos válidos. Advierte que un escalado estándar fallará y exige usar RobustScaler.
-  d) Corrupción Extrema ("porcentaje_outliers_zscore" > 0%): Exige un filtrado rígido de estas filas. Si el problema es de Regresión, advierte explícitamente que estos outliers destruirán funciones de pérdida estándar como el Error Cuadrático Medio (MSE), recomendando métricas robustas (MAE o Huber).
-  e) Sesgo Moderado ("porcentaje_outliers_iqr" > 5%): Indica que la variable tiene una distribución sesgada natural. Sugiere un RobustScaler o Ensambles basados en Árboles.
+[Paso 2: Diagnóstico Biométrico y Ruido (Agrupado)]
+- Revisa "multicolinealidad_vif_severa". Si hay VIF > 10, advierte sobre pérdida de interpretabilidad en modelos paramétricos y sugiere regularización L1/L2 o eliminación.
+- Revisa "valores_atipicos_severos". Audita la fisiología de las características (FEATURES):
+  a) Escasez ("escasez_ceros_pct" > 40%): Dictamina que la matriz es rala. Sugiere codificación binaria (presencia/ausencia) o algoritmos que manejen dispersión nativamente (XGBoost). (NOTA: NO sugieras Poisson ni Hurdle, ya que estos son predictores, no el objetivo).
+  b) Asimetría ("asimetria_skewness" > 1 o < -1): Exige transformaciones logarítmicas (Log1p o Box-Cox) antes de usar modelos lineales.
+  c) Colas Pesadas ("curtosis_kurtosis" > 3): Advierte que el escalado estándar colapsará el espacio geométrico y exige RobustScaler.
+  d) Corrupción/Outliers (Z-score o IQR altos): Aplica la regla 6 de PROTECCIÓN DE PACIENTES.
 
 [Paso 3: Topología del Espacio y Selección de Arquitectura]
-- PARA CLASIFICACIÓN (Si el bloque "separabilidad_clases" ESTÁ PRESENTE):
-  a) Silueta < 0.15 (Caos Espacial): Las variables actuales NO separan a los pacientes. Redes Neuronales Profundas solo memorizarán ruido. Exige Feature Engineering.
-  b) Silueta entre 0.15 y 0.40 (Superposición Moderada): Recomienda algoritmos no-lineales (Ensambles, SVM).
+- PARA CLASIFICACIÓN (Si existe "separabilidad_clases"):
+  a) Silueta < 0.15 (Caos Espacial): Las variables NO separan a los pacientes. Redes Neuronales Profundas solo memorizarán ruido. Exige Feature Engineering intensivo o extracción de no-linealidades.
+  b) Silueta entre 0.15 y 0.40: Recomienda Ensambles o SVM.
   c) Silueta > 0.40 (Altamente Separable): Recomienda modelos interpretables (Regresión Logística).
-- PARA REGRESIÓN (Si el bloque "separabilidad_clases" NO ESTÁ PRESENTE):
-  a) Busca las métricas de correlación (Pearson/Spearman). Si las correlaciones con el objetivo son débiles, advierte que el dataset carece de señal predictiva lineal y requerirá modelos basados en árboles no lineales (Gradient Boosting).
-  b) Dictamina que cualquier arquitectura de Red Neuronal profunda deberá tener una capa de salida con activación estrictamente Lineal (no Sigmoide/Softmax).
+- PARA REGRESIÓN (Si NO existe "separabilidad_clases"):
+  a) Si las correlaciones (Pearson/Spearman) son débiles, requerirá modelos basados en árboles no lineales.
 
 [Paso 4: Diagnóstico de Topología Federada]
-- Si existe el bloque "analisis_federado_nodos", evalúa la asimetría entre silos.
-- Si detectas divergencia estadística (diferencias drásticas en la distribución del objetivo), advierte categóricamente que los datos son "Non-IID". Dictamina que cualquier red de Aprendizaje Federado requerirá técnicas con penalización local (ej. FedProx) en lugar de un promedio simple (FedAvg).
+- Si existe "analisis_federado_nodos", evalúa la divergencia estadística. Si los silos son muy distintos, advierte que los datos son "Non-IID" y exige técnicas de Aprendizaje Federado con penalización local (FedProx).
 
 ENTREGABLE:
-Genera un reporte técnico estructurado en Markdown. Finaliza con un "Veredicto de Viabilidad Clínica".
+Genera un reporte técnico en Markdown. Finaliza con un "Veredicto de Viabilidad Clínica".
