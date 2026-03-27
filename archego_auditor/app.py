@@ -33,6 +33,7 @@ def cargar_prompt(nombre_archivo):
 # 2. MOTOR VISUAL: RENDERIZADO ADAPTATIVO (Plotly)
 # ==========================================
 def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
+    """Renderiza gráficos dinámicos protegiendo la memoria y adaptándose a la tarea."""
     try:
         resumen = json.loads(json_string)
     except Exception as e:
@@ -51,9 +52,15 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
     
     with col1:
         if "Regresión" in tipo_tarea:
-            fig_obj = px.histogram(df, x=columna_objetivo, nbins=50, marginal="box", color_discrete_sequence=['#2ecc71'])
+            # [CORRECCIÓN VISUAL 1]: Aumentamos los bins a 100 para ver claramente la curva en U
+            fig_obj = px.histogram(df, x=columna_objetivo, nbins=100, marginal="box", color_discrete_sequence=['#2ecc71'])
             fig_obj.update_layout(yaxis_title="Frecuencia (Filas)", margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig_obj, use_container_width=True)
+            
+            # [NUEVA ALERTA]: Leemos la bimodalidad del JSON
+            stats = analisis_pred.get("objetivo", {}).get("estadisticas_objetivo", {})
+            if stats.get("distribucion_bimodal_en_U"):
+                st.error("🚨 **ALERTA CRÍTICA DE TOPOLOGÍA:** Distribución bimodal severa (forma de 'U'). La mayoría de los datos están polarizados en los extremos. Un modelo de regresión lineal clásico fracasará aquí porque intentará predecir valores medios donde no hay datos. Considera binarizar el objetivo o usar regresión logística/beta.")
         else:
             dist_pct = analisis_pred.get("objetivo", {}).get("distribucion_pct", {})
             if dist_pct:
@@ -75,7 +82,7 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
 
     # --- B. RELEVANCIA PREDICTIVA ---
     st.markdown("---")
-    st.subheader("🎯 Relevancia Predictiva de Variables")
+    st.subheader("🎯 Relevancia Predictiva de Variables Tabulares")
     
     dict_relevancia = {}
     es_correlacion = False
@@ -95,22 +102,21 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
         df_imp = pd.DataFrame(list(dict_relevancia.items()), columns=['Predictor', 'Score'])
         df_imp['Predictor_Label'] = df_imp['Predictor'].astype(str).apply(lambda x: x[:30] + "..." if len(x) > 30 else x)
         df_imp['Magnitud'] = df_imp['Score'].abs() if es_correlacion else df_imp['Score']
-        # Limitamos a 15 para evitar colapso vertical
         df_imp = df_imp.sort_values(by='Magnitud', ascending=True).tail(15)
 
-        # [BLINDAJE VISUAL - SOLUCIÓN AL COLOR BLANCO]
-        # Asignamos colores sólidos y vibrantes dependiendo de la naturaleza de la métrica
         if es_correlacion:
             df_imp['Tipo_Impacto'] = df_imp['Score'].apply(lambda x: 'Correlación Positiva' if x >= 0 else 'Correlación Negativa')
-            mapa_colores = {'Correlación Positiva': '#3498db', 'Correlación Negativa': '#e74c3c'} # Azul y Rojo sólido
+            mapa_colores = {'Correlación Positiva': '#3498db', 'Correlación Negativa': '#e74c3c'}
         else:
             df_imp['Tipo_Impacto'] = 'Ganancia de Información'
-            mapa_colores = {'Ganancia de Información': '#2ecc71'} # Verde vibrante sólido
+            mapa_colores = {'Ganancia de Información': '#2ecc71'}
+
+        # [CORRECCIÓN VISUAL 2]: Altura dinámica ajustada. Si hay 1 variable, no dibuja un bloque gigante.
+        altura_dinamica_imp = max(150, len(df_imp) * 45)
 
         fig_imp = px.bar(
             df_imp, x='Score', y='Predictor_Label', orientation='h', text_auto='.3f', 
-            color='Tipo_Impacto', # Usamos nuestra nueva columna categórica
-            color_discrete_map=mapa_colores, # Forzamos los colores sólidos exactos
+            color='Tipo_Impacto', color_discrete_map=mapa_colores,
             hover_data={"Predictor": True, "Predictor_Label": False, "Magnitud": False}
         )
         
@@ -118,15 +124,21 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
             fig_imp.update_layout(xaxis=dict(range=[-1.1, 1.1]))
             
         fig_imp.update_layout(
-            xaxis_title=titulo_eje_x, 
-            yaxis_title="", 
-            showlegend=True if es_correlacion else False, # Muestra leyenda solo si hay 2 colores (Rojo/Azul)
+            height=altura_dinamica_imp,
+            xaxis_title=titulo_eje_x, yaxis_title="", 
+            showlegend=True if es_correlacion else False,
             margin=dict(l=0, r=0, t=10, b=0)
         )
         st.plotly_chart(fig_imp, use_container_width=True)
+        
+        # [ALERTA DE CONTEXTO]: Explicar al usuario por qué solo ve 1 variable
+        if len(df_imp) == 1:
+            st.caption(f"⚠️ **Nota de Sistema:** Solo se graficó la variable `{df_imp['Predictor'].iloc[0]}`. Este panel audita características tabulares numéricas. Para ver la relevancia interna de palabras (tokens), se requerirá un análisis posterior con TF-IDF o SHAP.")
+            
     else:
         st.info("No se detectaron predictores numéricos tabulares con señal matemática fuerte.")
-    # --- B.5 ACUERDO ENTRE ANOTADORES ---
+
+    # --- B.5 ACUERDO ENTRE ANOTADORES (FIABILIDAD HUMANA) ---
     acuerdo_data = resumen.get("analisis_acuerdo_anotadores", {})
     pares_evaluados = acuerdo_data.get("pares_evaluados", {})
     
@@ -140,9 +152,7 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
         ]).sort_values(by="Score", ascending=True)
         
         rango_x = [-1.0, 1.0] if any("Pearson" in str(m) for m in df_acuerdo["Métrica"]) else [0.0, 1.0]
-        
-        # [BLINDAJE VISUAL] Altura dinámica para múltiples jueces
-        altura_dinamica_acuerdo = max(300, len(df_acuerdo) * 35)
+        altura_dinamica_acuerdo = max(150, len(df_acuerdo) * 45)
 
         fig_acuerdo = px.bar(
             df_acuerdo, x="Score", y="Par de Jueces", orientation="h",
@@ -150,15 +160,13 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
             hover_data={"Diagnóstico": True, "Métrica": True}
         )
         fig_acuerdo.add_vline(x=0.60, line_dash="dash", line_color="black", annotation_text="Umbral Aceptable (>0.60)")
-        fig_acuerdo.update_layout(
-            height=altura_dinamica_acuerdo, 
-            xaxis=dict(range=rango_x), coloraxis_showscale=False, margin=dict(l=0, r=0, t=10, b=0)
-        )
+        fig_acuerdo.update_layout(height=altura_dinamica_acuerdo, xaxis=dict(range=rango_x), coloraxis_showscale=False, margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig_acuerdo, use_container_width=True)
 
     # --- C. MAPA DE RUIDO Y ANOMALÍAS ---
     st.markdown("---")
-    st.subheader("🌪️ Mapa de Ruido y Topología de Tensores")
+    # [CORRECCIÓN VISUAL 3]: Título simplificado sin hype
+    st.subheader("🕵️ Auditoría de Calidad de Datos (Outliers Tabulares)")
     
     outliers_data = analisis_pred.get("valores_atipicos_severos", {})
     hay_numericas = bool(analisis_pred.get("pearson_fuertes") or analisis_pred.get("spearman_fuertes") or analisis_pred.get("informacion_mutua_relevante") or outliers_data)
@@ -191,9 +199,7 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
             
             if vars_a_graficar:
                 df_ruido = df_ruido[df_ruido["Variable_Label"].isin(vars_a_graficar)]
-                
-                # [BLINDAJE VISUAL] Evitar el "Efecto Acordeón". 35px de altura por cada variable.
-                altura_dinamica_ruido = max(350, len(vars_a_graficar) * 35)
+                altura_dinamica_ruido = max(150, len(vars_a_graficar) * 45)
                 
                 fig_ruido = px.bar(
                     df_ruido, x="Porcentaje", y="Variable_Label", color="Tipo", orientation="h",
@@ -202,7 +208,7 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
                     category_orders={"Tipo": ["Datos Limpios", "Asimetría (IQR)", "Corrupción (Z-Score)"]}
                 )
                 fig_ruido.update_layout(
-                    height=altura_dinamica_ruido, # Expansión vertical segura
+                    height=altura_dinamica_ruido, 
                     xaxis_title="Porcentaje de Filas (%)", yaxis_title="", barmode='stack', 
                     xaxis=dict(range=[0, 100]), margin=dict(l=0, r=0, t=10, b=0)
                 )
@@ -227,10 +233,9 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
             if len(df_noise_nlp) > 10000: 
                 df_noise_nlp = df_noise_nlp.sample(10000, random_state=42)
 
-            # [BLINDAJE VISUAL] Truncamiento de pestañas para evitar desbordamiento horizontal
             nombres_pestanas = [c[:20] + "..." if len(c) > 20 else c for c in cols_texto]
             
-            st.info(f"Se detectaron {len(cols_texto)} campos de texto.")
+            st.info(f"Se detectaron {len(cols_texto)} campos de texto libres.")
             pestañas = st.tabs(nombres_pestanas)
 
             for idx, col_txt in enumerate(cols_texto):
@@ -256,7 +261,6 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
                         
                         df_col[col_tokens] = df_col[col_txt].astype(str).apply(lambda x: len(x.split()))
                         
-                        # [BLINDAJE] Evitar dibujar gráficos de texto si todas las secuencias quedaron vacías tras split
                         if df_col[col_tokens].sum() > 0:
                             fig_nlp_noise = px.histogram(
                                 df_col, x=col_tokens, nbins=50, marginal="box", 
@@ -285,7 +289,6 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
                     else: 
                         st.warning(f"La columna quedó vacía tras la limpieza de nulos.")
         else: st.info("No hay columnas tabulares o de texto válidas para mapear ruido.")
-
 
 # ==========================================
 # 3. ESTRUCTURA PRINCIPAL DE LA APP (UI)
