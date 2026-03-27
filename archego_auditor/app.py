@@ -98,17 +98,34 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
         # Limitamos a 15 para evitar colapso vertical
         df_imp = df_imp.sort_values(by='Magnitud', ascending=True).tail(15)
 
+        # [BLINDAJE VISUAL - SOLUCIÓN AL COLOR BLANCO]
+        # Asignamos colores sólidos y vibrantes dependiendo de la naturaleza de la métrica
+        if es_correlacion:
+            df_imp['Tipo_Impacto'] = df_imp['Score'].apply(lambda x: 'Correlación Positiva' if x >= 0 else 'Correlación Negativa')
+            mapa_colores = {'Correlación Positiva': '#3498db', 'Correlación Negativa': '#e74c3c'} # Azul y Rojo sólido
+        else:
+            df_imp['Tipo_Impacto'] = 'Ganancia de Información'
+            mapa_colores = {'Ganancia de Información': '#2ecc71'} # Verde vibrante sólido
+
         fig_imp = px.bar(
-            df_imp, x='Score', y='Predictor_Label', orientation='h', text_auto='.3f', color='Magnitud',
-            color_continuous_scale="Blues" if not es_correlacion else "RdBu",
-            hover_data={"Predictor": True, "Predictor_Label": False}
+            df_imp, x='Score', y='Predictor_Label', orientation='h', text_auto='.3f', 
+            color='Tipo_Impacto', # Usamos nuestra nueva columna categórica
+            color_discrete_map=mapa_colores, # Forzamos los colores sólidos exactos
+            hover_data={"Predictor": True, "Predictor_Label": False, "Magnitud": False}
         )
-        if es_correlacion: fig_imp.update_layout(xaxis=dict(range=[-1.1, 1.1]))
-        fig_imp.update_layout(xaxis_title=titulo_eje_x, yaxis_title="", coloraxis_showscale=False, margin=dict(l=0, r=0, t=10, b=0))
+        
+        if es_correlacion: 
+            fig_imp.update_layout(xaxis=dict(range=[-1.1, 1.1]))
+            
+        fig_imp.update_layout(
+            xaxis_title=titulo_eje_x, 
+            yaxis_title="", 
+            showlegend=True if es_correlacion else False, # Muestra leyenda solo si hay 2 colores (Rojo/Azul)
+            margin=dict(l=0, r=0, t=10, b=0)
+        )
         st.plotly_chart(fig_imp, use_container_width=True)
     else:
         st.info("No se detectaron predictores numéricos tabulares con señal matemática fuerte.")
-
     # --- B.5 ACUERDO ENTRE ANOTADORES ---
     acuerdo_data = resumen.get("analisis_acuerdo_anotadores", {})
     pares_evaluados = acuerdo_data.get("pares_evaluados", {})
