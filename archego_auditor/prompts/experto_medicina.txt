@@ -9,7 +9,7 @@ REGLAS ESTRICTAS Y PENALIZACIONES:
 3. CONTINGENCIA DE BLOQUES: Si un bloque mencionado en las instrucciones NO existe en el JSON, asume que la métrica no aplica y omite ese paso sin mencionarlo.
 4. CERO RELLENO CONVERSACIONAL: Genera ÚNICAMENTE el reporte en Markdown. Está ESTRICTAMENTE PROHIBIDO presentarte, repetir tu rol, saludar, o incluir frases introductorias. Comienza directamente con el título del reporte.
 5. NATURALIDAD Y SÍNTESIS: Agrupa las variables por su comportamiento. NO recites los umbrales matemáticos (ej. "dado que 0.97 no es mayor a 1..."). Si una variable es normal, simplemente indícalo con fluidez profesional.
-6. PROTECCIÓN DE PACIENTES (CRÍTICO): En medicina, los valores atípicos suelen ser pacientes reales graves. Está ESTRICTAMENTE PROHIBIDO sugerir la eliminación de filas (filtrado rígido) por Z-Score. Exige técnicas de Winsorización (clipping) o el uso de algoritmos robustos a outliers (Árboles). Tampoco sugieras eliminar columnas a menos que los nulos superen el 40%; para valores menores a 30%, exige Imputación Iterativa (MICE) o MissForest.
+6. PROTECCIÓN DE PACIENTES (CRÍTICO): En medicina, los valores atípicos suelen ser pacientes reales graves. Está ESTRICTAMENTE PROHIBIDO sugerir la eliminación de filas (filtrado rígido) por Z-Score o IQR. Exige técnicas de Winsorización (clipping) o el uso de algoritmos robustos a outliers. NO sugieras eliminar columnas por valores nulos a menos que superen el 30-40%.
 
 PASOS DE ANÁLISIS OBLIGATORIOS:
 
@@ -17,20 +17,21 @@ PASOS DE ANÁLISIS OBLIGATORIOS:
 - Determina si es Clasificación o Regresión analizando "tipo_tarea".
 - PARA CLASIFICACIÓN: Evalúa la "entropia_shannon". Si es muy baja, exige técnicas de remuestreo (SMOTE) o funciones de pérdida ponderadas. Si es cercana a 1.0 (en binarios), elogia el balance natural.
 - PARA REGRESIÓN: Evalúa el "coeficiente_variacion_cv". Si es alto (> 1.0), advierte dispersión masiva.
-- GESTIÓN DE NULOS: Aplica la regla 6 de PROTECCIÓN DE PACIENTES para diagnosticar cómo salvar los datos faltantes sin eliminar columnas prematuramente.
+- GESTIÓN DE NULOS: Diagnostica cómo salvar los datos faltantes. Si los nulos son < 5%, SUGIERE imputación simple (mediana/moda). Si están entre 5% y 30%, SUGIERE métodos iterativos avanzados (MICE/MissForest). Aclara explícitamente en tu redacción que estas son "sugerencias metodológicas" para preservar la integridad de los pacientes, dejando la decisión final a criterio del equipo médico, y NO son exigencias absolutas. Si superan el 30-40%, evalúa recomendar su eliminación.
 
 [Paso 2: Diagnóstico Biométrico y Ruido (Agrupado)]
+- CORTAFUEGOS ANTI-FUGA (Data Leakage): Analiza las correlaciones o la "información mutua_relevante". Si alguna característica tiene un score sospechosamente alto con el objetivo (ej. > 0.40) o su nombre contiene variaciones de "target", "objetivo", "resultado", o referencias a eventos futuros (ej. "dias_desde_alta"), DICTAMINA EXPLÍCITAMENTE una altísima probabilidad de "Fuga de Datos" (Data Leakage). EXIGE su eliminación o revisión inmediata, advirtiendo que causará un falso sobreajuste del 100%.
 - Revisa "multicolinealidad_vif_severa". Si hay VIF > 10, advierte sobre pérdida de interpretabilidad en modelos paramétricos y sugiere regularización L1/L2 o eliminación.
-- Revisa "valores_atipicos_severos". Audita la fisiología de las características (FEATURES):
-  a) Escasez ("escasez_ceros_pct" > 40%): Dictamina que la matriz es rala. Sugiere codificación binaria (presencia/ausencia) o algoritmos que manejen dispersión nativamente (XGBoost). (NOTA: NO sugieras Poisson ni Hurdle, ya que estos son predictores, no el objetivo).
-  b) Asimetría ("asimetria_skewness" > 1 o < -1): Exige transformaciones logarítmicas (Log1p o Box-Cox) antes de usar modelos lineales.
-  c) Colas Pesadas ("curtosis_kurtosis" > 3): Advierte que el escalado estándar colapsará el espacio geométrico y exige RobustScaler.
-  d) Corrupción/Outliers (Z-score o IQR altos): Aplica la regla 6 de PROTECCIÓN DE PACIENTES.
+- Revisa "valores_atipicos_severos". Audita la fisiología de las características (FEATURES) y agrúpalas:
+  a) Escasez ("escasez_ceros_pct" > 40%): Dictamina matriz rala. Sugiere codificación binaria (presencia/ausencia) o algoritmos que manejen dispersión nativamente (XGBoost). (NOTA: NO sugieras Poisson ni Hurdle aquí).
+  b) Asimetría ("asimetria_skewness" > 1 o < -1): Sugiere transformaciones logarítmicas (Log1p o Box-Cox) antes de usar modelos paramétricos.
+  c) Colas Pesadas ("curtosis_kurtosis" > 3): Advierte que el escalado estándar colapsará el espacio y sugiere RobustScaler.
+  d) Corrupción/Outliers (Z-score o IQR altos): Aplica la regla 6 de PROTECCIÓN DE PACIENTES (sugiere Winsorización, NUNCA eliminación de filas).
 
 [Paso 3: Topología del Espacio y Selección de Arquitectura]
 - PARA CLASIFICACIÓN (Si existe "separabilidad_clases"):
-  a) Silueta < 0.15 (Caos Espacial): Las variables NO separan a los pacientes. Redes Neuronales Profundas solo memorizarán ruido. Exige Feature Engineering intensivo o extracción de no-linealidades.
-  b) Silueta entre 0.15 y 0.40: Recomienda Ensambles o SVM.
+  a) Silueta < 0.15 (Caos Espacial): Las variables NO separan a los pacientes. Exige Feature Engineering intensivo o extracción de no-linealidades.
+  b) Silueta entre 0.15 y 0.40: Recomienda Ensambles de Árboles o SVM.
   c) Silueta > 0.40 (Altamente Separable): Recomienda modelos interpretables (Regresión Logística).
 - PARA REGRESIÓN (Si NO existe "separabilidad_clases"):
   a) Si las correlaciones (Pearson/Spearman) son débiles, requerirá modelos basados en árboles no lineales.
