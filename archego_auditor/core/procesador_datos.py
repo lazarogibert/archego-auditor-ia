@@ -26,6 +26,16 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             resumen["alertas_criticas"].append("La columna 'pt_id' ha sido detectada y excluida por ser identificador.")
 
         # ==========================================
+        # [NUEVA FUNCIONALIDAD 1] DIMENSIONES Y DUPLICADOS
+        # ==========================================
+        resumen["dimensiones_dataset"] = {
+            "total_filas": int(len(df)),
+            "total_columnas": int(len(df.columns)),
+            "ratio_filas_columnas": round(float(len(df) / len(df.columns)), 2) if len(df.columns) > 0 else 0.0,
+            "pct_duplicados": round(float((df.duplicated().sum() / len(df)) * 100), 2) if len(df) > 0 else 0.0
+        }
+
+        # ==========================================
         # 0. DETECCIÓN GLOBAL DE TAREA Y PERFILADO DEL OBJETIVO
         # ==========================================
         tarea_global = "Clasificación / Discreta"
@@ -59,11 +69,9 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 min_val = float(objetivo_serie.min())
                 max_val = float(objetivo_serie.max())
                 
-                # [NUEVO BLINDAJE] Detección Matemática de Distribución Bimodal (Forma de U)
                 rango = max_val - min_val
                 es_bimodal = False
                 if rango > 0:
-                    # Si más del 60% de los datos están concentrados en el 15% inferior y superior...
                     extremo_inf = objetivo_serie[objetivo_serie <= min_val + 0.15 * rango].count()
                     extremo_sup = objetivo_serie[objetivo_serie >= max_val - 0.15 * rango].count()
                     if (extremo_inf + extremo_sup) / len(objetivo_serie) > 0.60:
@@ -75,7 +83,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                     "minimo": round(min_val, 3),
                     "maximo": round(max_val, 3),
                     "coeficiente_variacion_cv": round(std / media, 3) if media != 0 else 0.0,
-                    "distribucion_bimodal_en_U": es_bimodal # Inyectamos la alerta al JSON
+                    "distribucion_bimodal_en_U": es_bimodal
                 }
             else:
                 dist = objetivo_serie.value_counts(normalize=True)
@@ -86,7 +94,6 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 else:
                     dist_dict = dist.to_dict()
                 
-                # Entropía de Shannon (Balance de Clases)
                 probabilidades = np.array(list(dist_dict.values()))
                 entropia = -np.sum(probabilidades * np.log2(probabilidades + 1e-9))
                 
@@ -106,7 +113,6 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             
             if not muestra.empty:
                 lon_chars = muestra.apply(len).mean()
-                # [BLINDAJE 1] Filtro Semántico para evitar procesar URLs o hashes
                 lon_words = muestra.apply(lambda x: np.mean([len(w) for w in x.split()]) if len(x.split()) > 0 else 0).mean()
                 
                 if ((unicos_pct > 0.3 and lon_chars > 15) or (lon_chars > 50)) and (lon_words < 15):
@@ -136,7 +142,6 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                         }
                     }
                     
-                    # [BLINDAJE 3] Alineación de índices segura para correlación NLP
                     if tarea_global == "Regresión Continua":
                         idx_comunes = conteo_palabras.index.intersection(objetivo_serie.index)
                         if len(idx_comunes) > 5:
@@ -149,7 +154,6 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                         dist_tags = todos_los_tags.value_counts(normalize=True).head(6).to_dict()
                         info_columna["distribucion_tags_individuales"] = {str(k): round(float(v)*100, 2) for k, v in dist_tags.items()}
                         
-                    # Riqueza Léxica (TTR) y Complejidad Morfológica
                     muestra_str = textos_validos.sample(min(len(textos_validos), 1000), random_state=42)
                     palabras_totales = " ".join(muestra_str.tolist()).lower().split()
                     
@@ -161,14 +165,45 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                         
                     resumen["analisis_nlp"]["columnas_analizadas"][col_txt] = info_columna
 
-        # C. Variables Categóricas Tradicionales
+        # ==========================================
+        # C. VARIABLES CATEGÓRICAS Y ALTA CARDINALIDAD
+        # ==========================================
         cols_categoricas = [c for c in df.select_dtypes(include=['object', 'category']).columns if c not in cols_text_detectadas and c != columna_objetivo]
+        resumen["alta_cardinalidad"] = {} 
+        
         for col in cols_categoricas:
             unicos = df[col].nunique()
-            info_col = {"valores_unicos": unicos, "porcentaje_nulos_real": round((int(df[col].isnull().sum()) / len(df)) * 100, 2)}
+            info_col = {"valores_unicos": int(unicos), "porcentaje_nulos_real": round((int(df[col].isnull().sum()) / len(df)) * 100, 2)}
             top_valores = df[col].value_counts(normalize=True).head(3).to_dict()
             info_col["top_3_frecuencias_pct"] = {str(k): round(float(v) * 100, 2) for k, v in top_valores.items()}
             resumen["variables_categoricas"][col] = info_col
+            
+            if unicos > 50:
+                resumen["alta_cardinalidad"][col] = int(unicos)
+
+        # ==========================================
+        # [NUEVA FUNCIONALIDAD 3] AUDITORÍA DE EQUIDAD (FAIRNESS)
+        # ==========================================
+        resumen["auditoria_equidad"] = {}
+        if tarea_global == "Clasificación / Discreta" and columna_objetivo in df.columns:
+            posibles_demos = ['PA_SEXO', 'PA_NIVEL', 'SEXO', 'GENERO', 'PAISNAC', 'NIVEL_SOCIOECONOMICO']
+            cols_demo = [c for c in df.columns if str(c).upper() in posibles_demos]
+            
+            # BLINDAJE: Garantizamos que la clase positiva se pueda extraer como string
+            try:
+                clase_positiva = df[columna_objetivo].value_counts().idxmin()
+            except Exception:
+                clase_positiva = None
+                
+            if clase_positiva is not None:
+                for col_demo in cols_demo:
+                    if df[col_demo].nunique() <= 15: 
+                        ct = pd.crosstab(df[col_demo], df[columna_objetivo], normalize='index')
+                        if clase_positiva in ct.columns:
+                            tasas = ct[clase_positiva].to_dict()
+                            resumen["auditoria_equidad"][f"Tasa de '{str(clase_positiva)}' por {col_demo}"] = {
+                                str(k): round(float(v) * 100, 2) for k, v in tasas.items()
+                            }
 
         # ==========================================
         # 1.5 RADAR DE ACUERDO ENTRE ANOTADORES
@@ -214,7 +249,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                     except Exception: pass
 
         # ==========================================
-        # 2. ANÁLISIS PREDICTIVO NUMÉRICO
+        # 2. ANÁLISIS PREDICTIVO NUMÉRICO (BLINDADO)
         # ==========================================
         cols_num = df.select_dtypes(include=[np.number]).columns
         cols_pred_num = [c for c in cols_num if c != columna_objetivo]
@@ -226,19 +261,27 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             resumen["analisis_predictivo"]["spearman_fuertes"] = corr_spearman[abs(corr_spearman) > 0.3].round(3).to_dict()
 
         if len(cols_pred_num) > 0:
-            df_limpio_mi = df[cols_pred_num + [columna_objetivo]].dropna()
-            if not df_limpio_mi.empty:
-                X_mi, y_mi = df_limpio_mi[cols_pred_num], df_limpio_mi[columna_objetivo]
+            
+            # BLINDAJE 1: Imputación rápida local para MI y VIF
+            # Solo eliminamos filas si no tienen el objetivo. Las predictoras se imputan.
+            df_math_safe = df[cols_pred_num + [columna_objetivo]].copy()
+            df_math_safe = df_math_safe.dropna(subset=[columna_objetivo])
+            
+            # Imputación por mediana para evitar "Listwise Deletion"
+            if not df_math_safe.empty:
+                df_math_safe[cols_pred_num] = df_math_safe[cols_pred_num].fillna(df_math_safe[cols_pred_num].median())
+
+                X_mi, y_mi = df_math_safe[cols_pred_num], df_math_safe[columna_objetivo]
                 try:
                     mi_scores = mutual_info_regression(X_mi, y_mi, random_state=42) if es_regresion_tabular else mutual_info_classif(X_mi, y_mi, random_state=42)
                     mi_filtrado = pd.Series(mi_scores, index=X_mi.columns)[pd.Series(mi_scores, index=X_mi.columns) > 0.05].round(3).to_dict()
                     resumen["analisis_predictivo"]["informacion_mutua_relevante"] = {k: float(v) for k, v in mi_filtrado.items()}
                 except Exception: pass
 
-            df_preds = df[cols_pred_num].dropna()
-            if not df_preds.empty:
                 try:
-                    X_vif = df_preds.loc[:, df_preds.var() > 0]
+                    # Filtramos columnas constantes (Varianza = 0 causa error en VIF)
+                    X_vif = df_math_safe[cols_pred_num]
+                    X_vif = X_vif.loc[:, X_vif.var() > 0]
                     if len(X_vif.columns) >= 2 and len(X_vif) > len(X_vif.columns):
                         vifs = np.diag(np.linalg.inv(X_vif.corr().values))
                         resumen["analisis_predictivo"]["multicolinealidad_vif_severa"] = {col: round(float(vif), 2) for col, vif in zip(X_vif.columns, vifs) if vif > 10 and not np.isinf(vif)}
@@ -246,6 +289,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                     resumen["alertas_criticas"].append("Matriz singular detectada en VIF. Existe correlación perfecta (1.0).")
                 except Exception: pass
 
+            # El análisis de Outliers SÍ debe hacerse ignorando Nulos columna por columna (dropna local)
             resumen["analisis_predictivo"]["valores_atipicos_severos"] = {}
             for col in cols_pred_num:
                 s = df[col].dropna()
@@ -259,7 +303,6 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                     if std > 0: pct_z = round(float((len(s[(s < media - 3 * std) | (s > media + 3 * std)]) / len(s)) * 100), 2)
                     
                     if pct_iqr > 5.0 or pct_z > 0.0:
-                        # [BLINDAJE 2] Protección anti-NaN para Skewness y Kurtosis
                         skew_val = float(s.skew())
                         kurt_val = float(s.kurtosis())
                         
@@ -275,18 +318,21 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                             }
                         }
 
+        # BLINDAJE 2: Imputación rápida para PCA (Evita perder pacientes)
         if not es_regresion_tabular:
             resumen["analisis_predictivo"]["separabilidad_clases"] = {}
             y_completo = df[columna_objetivo].dropna()
             if 1 < y_completo.nunique() <= 15 and len(cols_pred_num) >= 2:
-                df_sep = df[cols_pred_num + [columna_objetivo]].dropna()
-                if len(df_sep) > 50:
-                    clases_validas = df_sep[columna_objetivo].value_counts()[df_sep[columna_objetivo].value_counts() > 1].index
-                    df_sep = df_sep[df_sep[columna_objetivo].isin(clases_validas)]
+                # Usamos el dataframe imputado localmente que ya creamos (df_math_safe)
+                if not df_math_safe.empty and len(df_math_safe) > 50:
+                    clases_validas = df_math_safe[columna_objetivo].value_counts()[df_math_safe[columna_objetivo].value_counts() > 1].index
+                    df_sep = df_math_safe[df_math_safe[columna_objetivo].isin(clases_validas)]
+                    
                     if df_sep[columna_objetivo].nunique() > 1:
                         df_sample = df_sep.sample(n=min(len(df_sep), 3000), random_state=42)
                         clases_seguras = df_sample[columna_objetivo].value_counts()[df_sample[columna_objetivo].value_counts() > 1].index
                         df_sample = df_sample[df_sample[columna_objetivo].isin(clases_seguras)]
+                        
                         if df_sample[columna_objetivo].nunique() > 1:
                             try:
                                 X_pca = PCA(n_components=min(3, len(cols_pred_num)), random_state=42).fit_transform(StandardScaler().fit_transform(df_sample[cols_pred_num]))
