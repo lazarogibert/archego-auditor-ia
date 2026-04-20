@@ -7,17 +7,22 @@ import plotly.express as px
 from google import genai
 from core.procesador_datos import procesar_df_a_json
 
-st.set_page_config(page_title="Archego | Auditor B2B", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Archego | Auditor ML", page_icon="⚡", layout="wide")
 API_KEY = os.environ.get("GEMINI_API_KEY", "TU_API_KEY_AQUI")
+
+# ==========================================
+# 0. CONTROLADOR DE ESTADO (CORTAFUEGOS API)
+# ==========================================
+if 'estado_auditoria' not in st.session_state:
+    st.session_state.estado_auditoria = False
+
+def resetear_estado():
+    """Apaga la auditoría si el usuario cambia cualquier parámetro para evitar llamadas accidentales a la API."""
+    st.session_state.estado_auditoria = False
 
 # ==========================================
 # 1. CARGA DE PROMPTS
 # ==========================================
-AGENTES = {
-    "Arquitecto ML (Datos Médicos)": "experto_medicina",
-    "Ingeniero NLP (Text Mining)": "experto_argumentacion"
-}
-
 def cargar_prompt(nombre_archivo):
     try:
         directorio_base = os.path.dirname(os.path.abspath(__file__))
@@ -52,12 +57,10 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
     
     with col1:
         if "Regresión" in tipo_tarea:
-            # [CORRECCIÓN VISUAL 1]: Aumentamos los bins a 100 para ver claramente la curva en U
             fig_obj = px.histogram(df, x=columna_objetivo, nbins=100, marginal="box", color_discrete_sequence=['#2ecc71'])
             fig_obj.update_layout(yaxis_title="Frecuencia (Filas)", margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig_obj, use_container_width=True)
             
-            # [NUEVA ALERTA]: Leemos la bimodalidad del JSON
             stats = analisis_pred.get("objetivo", {}).get("estadisticas_objetivo", {})
             if stats.get("distribucion_bimodal_en_U"):
                 st.error("🚨 **ALERTA CRÍTICA DE TOPOLOGÍA:** Distribución bimodal severa (forma de 'U'). La mayoría de los datos están polarizados en los extremos. Un modelo de regresión lineal clásico fracasará aquí porque intentará predecir valores medios donde no hay datos. Considera binarizar el objetivo o usar regresión logística/beta.")
@@ -111,7 +114,6 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
             df_imp['Tipo_Impacto'] = 'Ganancia de Información'
             mapa_colores = {'Ganancia de Información': '#2ecc71'}
 
-        # [CORRECCIÓN VISUAL 2]: Altura dinámica ajustada. Si hay 1 variable, no dibuja un bloque gigante.
         altura_dinamica_imp = max(150, len(df_imp) * 45)
 
         fig_imp = px.bar(
@@ -131,7 +133,6 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
         )
         st.plotly_chart(fig_imp, use_container_width=True)
         
-        # [ALERTA DE CONTEXTO]: Explicar al usuario por qué solo ve 1 variable
         if len(df_imp) == 1:
             st.caption(f"⚠️ **Nota de Sistema:** Solo se graficó la variable `{df_imp['Predictor'].iloc[0]}`. Este panel audita características tabulares numéricas. Para ver la relevancia interna de palabras (tokens), se requerirá un análisis posterior con TF-IDF o SHAP.")
             
@@ -165,7 +166,6 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
 
     # --- C. MAPA DE RUIDO Y ANOMALÍAS ---
     st.markdown("---")
-    # [CORRECCIÓN VISUAL 3]: Título simplificado sin hype
     st.subheader("🕵️ Auditoría de Calidad de Datos (Outliers Tabulares)")
     
     outliers_data = analisis_pred.get("valores_atipicos_severos", {})
@@ -214,7 +214,7 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
                 )
                 st.plotly_chart(fig_ruido, use_container_width=True)
             else: st.success("Variables numéricas libres de valores atípicos severos.")
-        else: st.success("Variables tabulares 100% libres de valores atípicos severos.")
+        else: st.success("Variables tabulares libres de valores atípicos severos.")
     else:
         # RUTA NLP
         cols_texto = []
@@ -247,7 +247,7 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
                     
                     kpi1, kpi2, kpi3 = st.columns(3)
                     kpi1.metric("Riqueza Léxica (TTR)", f"{ttr_val:.2f}", "Spam / Bots" if ttr_val < 0.2 else "Saludable", delta_color="inverse" if ttr_val < 0.2 else "normal")
-                    kpi2.metric("Complejidad Morfológica", f"{lon_palabra:.1f} lts/pal", "Académico" if lon_palabra > 6 else "Coloquial", delta_color="off")
+                    kpi2.metric("Complejidad Morfológica", f"{lon_palabra:.1f} lts/pal", "Técnico" if lon_palabra > 6 else "Coloquial", delta_color="off")
                     
                     if "correlacion_longitud_vs_score" in stats_nlp:
                         corr_len = stats_nlp.get("correlacion_longitud_vs_score", 0)
@@ -281,7 +281,7 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
                                 title=f"Dispersión Semántica", 
                                 hover_data={col_txt: False, col_vocab: False}
                             )
-                            fig_ttr.add_hline(y=0.25, line_dash="dot", line_color="red", annotation_text="Peligro: Spam / Bots (TTR < 0.25)", annotation_position="bottom right")
+                            fig_ttr.add_hline(y=0.25, line_dash="dot", line_color="red", annotation_text="Peligro: Spam / Bots / Plantillas (TTR < 0.25)", annotation_position="bottom right")
                             fig_ttr.update_layout(xaxis_title="Tokens", yaxis_title="TTR", yaxis=dict(range=[-0.05, 1.05]), margin=dict(l=0, r=0, t=30, b=0))
                             st.plotly_chart(fig_ttr, use_container_width=True)
                         else:
@@ -294,11 +294,30 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
 # 3. ESTRUCTURA PRINCIPAL DE LA APP (UI)
 # ==========================================
 def main():
-    st.title("⚡ Archego | Auditor de Datasets")
-    st.markdown("Auditor de IA estricto para modelos centralizados y descentralizados.")
+    # 1. Menú Dinámico Lateral (Híbrido) conectado al Callback de Reset
+    st.sidebar.title("⚙️ Motor de Auditoría")
+    modo_auditoria = st.sidebar.radio(
+        "Selecciona el dominio del dataset:",
+        ("🏥 Clínico / Médico", "🏢 General / Negocios"),
+        on_change=resetear_estado # BLINDAJE: Si cambias de modo, se borra el reporte viejo
+    )
+    st.sidebar.markdown("---")
 
-    if 'estado_auditoria' not in st.session_state:
-        st.session_state.estado_auditoria = False
+    # 2. Configuración Contextual de la Interfaz
+    if modo_auditoria == "🏥 Clínico / Médico":
+        st.title("🏥 Auditor Clínico de Machine Learning")
+        st.markdown("Sube tu dataset médico para evaluar riesgo de fuga de datos, viabilidad biométrica y sesgos en salud.")
+        AGENTES = {
+            "Arquitecto ML (Clínico)": "experto_medicina",
+            "Ingeniero NLP (Text Mining)": "experto_argumentacion" 
+        }
+    else:
+        st.title("🧠 Auditor Arquitectónico de Machine Learning")
+        st.markdown("Sube tu dataset corporativo para evaluar integridad predictiva, distribuciones y viabilidad del modelo de negocio.")
+        AGENTES = {
+            "Arquitecto ML (General)": "experto_general",
+            "Ingeniero NLP (Text Mining)": "experto_argumentacion"
+        }
 
     if API_KEY == "TU_API_KEY_AQUI" or not API_KEY:
         st.error("🚨 **ALERTA DE SISTEMA:** No se ha configurado la clave 'GEMINI_API_KEY'. Por favor, configúrala en las variables de entorno.")
@@ -308,9 +327,19 @@ def main():
 
     with col1:
         st.subheader("1. Configuración")
-        agente_seleccionado = st.selectbox("Especialidad del Agente:", list(AGENTES.keys()))
         
-        archivos_csv = st.file_uploader("Dataset(s) (.csv)", type=["csv"], accept_multiple_files=True)
+        agente_seleccionado = st.selectbox(
+            "Especialidad del Agente:", 
+            list(AGENTES.keys()), 
+            on_change=resetear_estado # BLINDAJE
+        )
+        
+        archivos_csv = st.file_uploader(
+            "Dataset(s) (.csv)", 
+            type=["csv"], 
+            accept_multiple_files=True, 
+            on_change=resetear_estado # BLINDAJE
+        )
         
         columna_objetivo = None
         columna_nodo_final = ""
@@ -333,19 +362,29 @@ def main():
                 df_global = pd.concat(lista_dfs, ignore_index=True)
                 
                 columnas_disponibles = list(df_global.columns)
-                columna_objetivo = st.selectbox("🎯 Columna Objetivo (Obligatorio):", columnas_disponibles)
+                columna_objetivo = st.selectbox(
+                    "🎯 Columna Objetivo (Obligatorio):", 
+                    columnas_disponibles, 
+                    on_change=resetear_estado # BLINDAJE
+                )
                 
                 if len(archivos_csv) > 1:
                     st.info("🌐 Nodo Multicéntrico detectado automáticamente por origen de archivo.")
                     columna_nodo_final = 'origen_archivo_automatico'
                 else:
                     opciones_nodo = ["Ninguno"] + columnas_disponibles
-                    columna_nodo_manual = st.selectbox("🌐 Columna Nodo (Opcional):", opciones_nodo)
+                    columna_nodo_manual = st.selectbox(
+                        "🌐 Columna Nodo / Segmento (Opcional):", 
+                        opciones_nodo, 
+                        on_change=resetear_estado # BLINDAJE
+                    )
                     columna_nodo_final = columna_nodo_manual if columna_nodo_manual != "Ninguno" else ""
 
             except Exception as e:
                 st.error(f"Error al leer los archivos: {e}")
                 st.stop()
+        else:
+            resetear_estado() # Si el usuario borra los archivos, apagamos el estado
         
         if st.button("🚀 Ejecutar Auditoría", type="primary", use_container_width=True, disabled=not archivos_csv):
             st.session_state.estado_auditoria = True
@@ -355,7 +394,7 @@ def main():
         
         if st.session_state.estado_auditoria and df_global is not None and columna_objetivo:
             try:
-                with st.spinner("🤖 Analizando topología y consultando a Gemini..."):
+                with st.spinner(f"🤖 Analizando topología y consultando al {agente_seleccionado}..."):
                     json_estadisticas = procesar_df_a_json(df_global, columna_objetivo, columna_nodo_final)
                     prompt_maestro = cargar_prompt(AGENTES[agente_seleccionado])
                     
