@@ -98,6 +98,40 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 resumen["analisis_predictivo"]["objetivo"]["distribucion_pct"] = {str(k): round(float(v) * 100, 2) for k, v in dist_dict.items()}
                 resumen["analisis_predictivo"]["objetivo"]["entropia_shannon"] = round(float(entropia), 3)
 
+            # ==========================================
+            # 1.5 CÁLCULO DE LÍNEA BASE (DUMMY MODELS)
+            # ==========================================
+            linea_base = {}
+            if tarea_global == "Regresión Continua":
+                y_num = pd.to_numeric(objetivo_serie, errors='coerce').dropna()
+                if len(y_num) > 0:
+                    media_y = float(y_num.mean())
+                    mediana_y = float(y_num.median())
+                    mae_base = float((y_num - mediana_y).abs().mean())
+                    rmse_base = float(np.sqrt(((y_num - media_y)**2).mean()))
+                    linea_base = {
+                        "estrategia_prediccion_mediana": {"mae_esperado": round(mae_base, 4)},
+                        "estrategia_prediccion_media": {"rmse_esperado": round(rmse_base, 4)}
+                    }
+            elif tarea_global == "Clasificación / Discreta":
+                if not objetivo_serie.empty:
+                    frecuencias = objetivo_serie.value_counts(normalize=True)
+                    prev_mayoritaria = float(frecuencias.max())
+                    prev_minoritaria = float(frecuencias.min())
+                    linea_base = {
+                        "estrategia_mayoritaria": {
+                            "accuracy_esperado": round(prev_mayoritaria, 4),
+                            "recall_esperado": 0.0,
+                            "f2_score_esperado": 0.0
+                        },
+                        "estrategia_aleatoria_estratificada": {
+                            "pr_auc_esperado_clase_minoritaria": round(prev_minoritaria, 4)
+                        }
+                    }
+            
+            if linea_base:
+                resumen["analisis_predictivo"]["linea_base_predictiva"] = linea_base
+
         # ==========================================
         # 2. ENRUTADOR NLP Y RIQUEZA LÉXICA
         # ==========================================
@@ -165,7 +199,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
         resumen["auditoria_equidad"] = {}
         if tarea_global == "Clasificación / Discreta" and columna_objetivo in df.columns:
             try:
-                clase_positiva = df[columna_objetivo].value_counts().idxmin()
+                clase_positiva = str(df[columna_objetivo].value_counts().idxmin())
             except Exception:
                 clase_positiva = None
                 
@@ -184,10 +218,10 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 top_5_segmentos = [x[0] for x in segmentos_potenciales[:5]]
                 
                 for col_seg in top_5_segmentos:
-                    ct = pd.crosstab(df[col_seg], df[columna_objetivo], normalize='index')
+                    ct = pd.crosstab(df[col_seg], df[columna_objetivo].astype(str), normalize='index')
                     if clase_positiva in ct.columns:
                         tasas = ct[clase_positiva].to_dict()
-                        resumen["auditoria_equidad"][f"Tasa de '{str(clase_positiva)}' por {col_seg}"] = {
+                        resumen["auditoria_equidad"][f"Tasa de '{clase_positiva}' por {col_seg}"] = {
                             str(k): round(float(v) * 100, 2) for k, v in tasas.items()
                         }
 
@@ -223,10 +257,14 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             df_math_safe = df[cols_pred_num + [columna_objetivo]].copy()
             df_math_safe = df_math_safe.dropna(subset=[columna_objetivo])
             
-            if not df_math_safe.empty:
-                df_math_safe[cols_pred_num] = df_math_safe[cols_pred_num].fillna(df_math_safe[cols_pred_num].median())
+            # ELIMINAR COLUMNAS FANTASMA PARA EVITAR NaNs POST-IMPUTACIÓN
+            df_math_safe = df_math_safe.dropna(axis=1, how='all')
+            cols_pred_num_safe = [c for c in cols_pred_num if c in df_math_safe.columns]
+            
+            if not df_math_safe.empty and len(cols_pred_num_safe) > 0:
+                df_math_safe[cols_pred_num_safe] = df_math_safe[cols_pred_num_safe].fillna(df_math_safe[cols_pred_num_safe].median())
 
-                X_mi, y_mi = df_math_safe[cols_pred_num], df_math_safe[columna_objetivo]
+                X_mi, y_mi = df_math_safe[cols_pred_num_safe], df_math_safe[columna_objetivo]
                 try:
                     mi_scores = mutual_info_regression(X_mi, y_mi, random_state=42) if es_regresion_tabular else mutual_info_classif(X_mi, y_mi, random_state=42)
                     mi_filtrado = pd.Series(mi_scores, index=X_mi.columns)[pd.Series(mi_scores, index=X_mi.columns) > 0.05].round(3).to_dict()
@@ -234,10 +272,11 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 except Exception: pass
 
                 try:
-                    X_vif = df_math_safe[cols_pred_num]
+                    X_vif = df_math_safe[cols_pred_num_safe]
                     X_vif = X_vif.loc[:, X_vif.var() > 0]
                     if len(X_vif.columns) >= 2 and len(X_vif) > len(X_vif.columns):
-                        vifs = np.diag(np.linalg.inv(X_vif.corr().values))
+                        # USO DE PSEUDO-INVERSA PARA TOLERAR COLINEALIDAD PERFECTA
+                        vifs = np.diag(np.linalg.pinv(X_vif.corr().values))
                         resumen["analisis_predictivo"]["multicolinealidad_vif_severa"] = {col: round(float(vif), 2) for col, vif in zip(X_vif.columns, vifs) if vif > 10 and not np.isinf(vif)}
                 except Exception: pass
 
@@ -273,9 +312,12 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             resumen["analisis_predictivo"]["separabilidad_clases"] = {}
             y_completo = df[columna_objetivo].dropna()
             if 1 < y_completo.nunique() <= 15 and len(cols_pred_num) >= 2:
-                if not df_math_safe.empty and len(df_math_safe) > 50:
-                    clases_validas = df_math_safe[columna_objetivo].value_counts()[df_math_safe[columna_objetivo].value_counts() > 1].index
-                    df_sep = df_math_safe[df_math_safe[columna_objetivo].isin(clases_validas)]
+                # Volvemos a generar df_math_safe local por si falló la sección anterior
+                df_pca_safe = df[cols_pred_num + [columna_objetivo]].dropna()
+                
+                if not df_pca_safe.empty and len(df_pca_safe) > 50:
+                    clases_validas = df_pca_safe[columna_objetivo].value_counts()[df_pca_safe[columna_objetivo].value_counts() > 1].index
+                    df_sep = df_pca_safe[df_pca_safe[columna_objetivo].isin(clases_validas)]
                     
                     if df_sep[columna_objetivo].nunique() > 1:
                         df_sample = df_sep.sample(n=min(len(df_sep), 3000), random_state=42)
