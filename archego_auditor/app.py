@@ -11,7 +11,7 @@ st.set_page_config(page_title="Archego | Auditor ML", page_icon="⚡", layout="w
 API_KEY = os.environ.get("GEMINI_API_KEY", "TU_API_KEY_AQUI")
 
 # ==========================================
-# 0. CONTROLADOR DE ESTADO (CORTAFUEGOS API)
+# 0. CONTROLADOR DE ESTADO Y DICCIONARIO MAESTRO
 # ==========================================
 if 'estado_auditoria' not in st.session_state:
     st.session_state.estado_auditoria = False
@@ -20,9 +20,29 @@ def resetear_estado():
     """Apaga la auditoría si el usuario cambia cualquier parámetro para evitar llamadas accidentales a la API."""
     st.session_state.estado_auditoria = False
 
+MOTORES_CONFIG = {
+    "🏥 Clínico / Médico": {
+        "titulo": "🏥 Auditor Clínico de Machine Learning",
+        "descripcion": "Sube tu dataset médico para evaluar riesgo de fuga de datos, viabilidad biométrica y sesgos en salud.",
+        "agentes": {
+            "Arquitecto ML (Clínico)": "experto_medicina",
+            "Ingeniero NLP (Text Mining)": "experto_argumentacion"
+        }
+    },
+    "🏢 General / Negocios": {
+        "titulo": "🧠 Auditor Arquitectónico de Machine Learning",
+        "descripcion": "Sube tu dataset corporativo para evaluar integridad predictiva, distribuciones y viabilidad del modelo de negocio.",
+        "agentes": {
+            "Arquitecto ML (General)": "experto_general",
+            "Ingeniero NLP (Text Mining)": "experto_argumentacion"
+        }
+    }
+}
+
 # ==========================================
-# 1. CARGA DE PROMPTS
+# 1. CARGA DE PROMPTS Y DATOS (CACHÉ)
 # ==========================================
+@st.cache_data
 def cargar_prompt(nombre_archivo):
     try:
         directorio_base = os.path.dirname(os.path.abspath(__file__))
@@ -34,15 +54,22 @@ def cargar_prompt(nombre_archivo):
     except Exception as e:
         return f"ERROR_SISTEMA: {str(e)}"
 
+@st.cache_data
+def extraer_json_seguro(json_string):
+    """Parsea el JSON una sola vez por ejecución para ahorrar memoria."""
+    try:
+        return json.loads(json_string)
+    except Exception:
+        return None
+
 # ==========================================
 # 2. MOTOR VISUAL: RENDERIZADO ADAPTATIVO (Plotly)
 # ==========================================
 def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
     """Renderiza gráficos dinámicos protegiendo la memoria y adaptándose a la tarea."""
-    try:
-        resumen = json.loads(json_string)
-    except Exception as e:
-        st.error(f"Error al leer el JSON interno para gráficos: {e}")
+    resumen = extraer_json_seguro(json_string)
+    if not resumen:
+        st.error("Error al leer el JSON interno para gráficos.")
         return
 
     st.markdown("---")
@@ -294,30 +321,18 @@ def renderizar_graficos_auditoria(json_string, df, columna_objetivo):
 # 3. ESTRUCTURA PRINCIPAL DE LA APP (UI)
 # ==========================================
 def main():
-    # 1. Menú Dinámico Lateral (Híbrido) conectado al Callback de Reset
     st.sidebar.title("⚙️ Motor de Auditoría")
     modo_auditoria = st.sidebar.radio(
         "Selecciona el dominio del dataset:",
-        ("🏥 Clínico / Médico", "🏢 General / Negocios"),
-        on_change=resetear_estado # BLINDAJE: Si cambias de modo, se borra el reporte viejo
+        list(MOTORES_CONFIG.keys()),
+        on_change=resetear_estado 
     )
     st.sidebar.markdown("---")
 
-    # 2. Configuración Contextual de la Interfaz
-    if modo_auditoria == "🏥 Clínico / Médico":
-        st.title("🏥 Auditor Clínico de Machine Learning")
-        st.markdown("Sube tu dataset médico para evaluar riesgo de fuga de datos, viabilidad biométrica y sesgos en salud.")
-        AGENTES = {
-            "Arquitecto ML (Clínico)": "experto_medicina",
-            "Ingeniero NLP (Text Mining)": "experto_argumentacion" 
-        }
-    else:
-        st.title("🧠 Auditor Arquitectónico de Machine Learning")
-        st.markdown("Sube tu dataset corporativo para evaluar integridad predictiva, distribuciones y viabilidad del modelo de negocio.")
-        AGENTES = {
-            "Arquitecto ML (General)": "experto_general",
-            "Ingeniero NLP (Text Mining)": "experto_argumentacion"
-        }
+    config_actual = MOTORES_CONFIG[modo_auditoria]
+    
+    st.title(config_actual["titulo"])
+    st.markdown(config_actual["descripcion"])
 
     if API_KEY == "TU_API_KEY_AQUI" or not API_KEY:
         st.error("🚨 **ALERTA DE SISTEMA:** No se ha configurado la clave 'GEMINI_API_KEY'. Por favor, configúrala en las variables de entorno.")
@@ -330,15 +345,15 @@ def main():
         
         agente_seleccionado = st.selectbox(
             "Especialidad del Agente:", 
-            list(AGENTES.keys()), 
-            on_change=resetear_estado # BLINDAJE
+            list(config_actual["agentes"].keys()), 
+            on_change=resetear_estado 
         )
         
         archivos_csv = st.file_uploader(
             "Dataset(s) (.csv)", 
             type=["csv"], 
             accept_multiple_files=True, 
-            on_change=resetear_estado # BLINDAJE
+            on_change=resetear_estado 
         )
         
         columna_objetivo = None
@@ -365,7 +380,7 @@ def main():
                 columna_objetivo = st.selectbox(
                     "🎯 Columna Objetivo (Obligatorio):", 
                     columnas_disponibles, 
-                    on_change=resetear_estado # BLINDAJE
+                    on_change=resetear_estado 
                 )
                 
                 if len(archivos_csv) > 1:
@@ -376,7 +391,7 @@ def main():
                     columna_nodo_manual = st.selectbox(
                         "🌐 Columna Nodo / Segmento (Opcional):", 
                         opciones_nodo, 
-                        on_change=resetear_estado # BLINDAJE
+                        on_change=resetear_estado 
                     )
                     columna_nodo_final = columna_nodo_manual if columna_nodo_manual != "Ninguno" else ""
 
@@ -384,7 +399,7 @@ def main():
                 st.error(f"Error al leer los archivos: {e}")
                 st.stop()
         else:
-            resetear_estado() # Si el usuario borra los archivos, apagamos el estado
+            resetear_estado() # Purga de memoria si el usuario borra los archivos
         
         if st.button("🚀 Ejecutar Auditoría", type="primary", use_container_width=True, disabled=not archivos_csv):
             st.session_state.estado_auditoria = True
@@ -394,9 +409,11 @@ def main():
         
         if st.session_state.estado_auditoria and df_global is not None and columna_objetivo:
             try:
-                with st.spinner(f"🤖 Analizando topología y consultando al {agente_seleccionado}..."):
+                with st.spinner(f"🤖 Analizando topología y consultando al agente..."):
                     json_estadisticas = procesar_df_a_json(df_global, columna_objetivo, columna_nodo_final)
-                    prompt_maestro = cargar_prompt(AGENTES[agente_seleccionado])
+                    
+                    nombre_archivo_prompt = config_actual["agentes"][agente_seleccionado]
+                    prompt_maestro = cargar_prompt(nombre_archivo_prompt)
                     
                     if prompt_maestro.startswith("ERROR"):
                         st.error(prompt_maestro)
