@@ -21,13 +21,13 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
     }
 
     try:
-        # Regla de purga estructural
-        if 'pt_id' in df.columns:
-            resumen["alertas_criticas"].append("La columna 'pt_id' ha sido detectada y excluida por ser identificador.")
+        # ==========================================
+        # 0. INTEGRIDAD ESTRUCTURAL (HÍBRIDA)
+        # ==========================================
+        posibles_ids = [c for c in df.columns if str(c).lower() in ['id', 'uuid', 'index', 'pt_id', 'paciente_id', 'user_id'] or str(c).lower().endswith('_id')]
+        if posibles_ids:
+            resumen["alertas_criticas"].append(f"Se detectaron posibles identificadores directos: {posibles_ids}. Revisa si deben excluirse para evitar sobreajuste o fugas de privacidad.")
 
-        # ==========================================
-        # [NUEVA FUNCIONALIDAD 1] DIMENSIONES Y DUPLICADOS
-        # ==========================================
         resumen["dimensiones_dataset"] = {
             "total_filas": int(len(df)),
             "total_columnas": int(len(df.columns)),
@@ -36,7 +36,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
         }
 
         # ==========================================
-        # 0. DETECCIÓN GLOBAL DE TAREA Y PERFILADO DEL OBJETIVO
+        # 1. PERFILADO DEL OBJETIVO Y ENRUTADOR DE TAREA
         # ==========================================
         tarea_global = "Clasificación / Discreta"
         es_regresion_tabular = False
@@ -78,10 +78,8 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                         es_bimodal = True
 
                 resumen["analisis_predictivo"]["objetivo"]["estadisticas_objetivo"] = {
-                    "media": round(media, 3),
-                    "desviacion_estandar": round(std, 3),
-                    "minimo": round(min_val, 3),
-                    "maximo": round(max_val, 3),
+                    "media": round(media, 3), "desviacion_estandar": round(std, 3),
+                    "minimo": round(min_val, 3), "maximo": round(max_val, 3),
                     "coeficiente_variacion_cv": round(std / media, 3) if media != 0 else 0.0,
                     "distribucion_bimodal_en_U": es_bimodal
                 }
@@ -90,7 +88,7 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 if len(dist) > 15:
                     dist_dict = dist.head(10).to_dict()
                     dist_dict["[OTRAS_CLASES_AGRUPADAS]"] = float(dist.iloc[10:].sum())
-                    resumen["alertas_criticas"].append(f"Alta cardinalidad en el objetivo '{columna_objetivo}' ({len(dist)} clases). El JSON fue truncado.")
+                    resumen["alertas_criticas"].append(f"Alta cardinalidad en el objetivo '{columna_objetivo}' ({len(dist)} clases).")
                 else:
                     dist_dict = dist.to_dict()
                 
@@ -101,12 +99,11 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 resumen["analisis_predictivo"]["objetivo"]["entropia_shannon"] = round(float(entropia), 3)
 
         # ==========================================
-        # 1. ENRUTADOR NLP Y ANÁLISIS DE TEXTO (GRANULAR)
+        # 2. ENRUTADOR NLP Y RIQUEZA LÉXICA
         # ==========================================
         cols_text_detectadas = []
         for col in df.select_dtypes(include=['object', 'string']).columns:
-            if col == columna_objetivo:
-                continue
+            if col == columna_objetivo: continue
             
             unicos_pct = df[col].nunique() / len(df)
             muestra = df[col].dropna().astype(str).head(100)
@@ -114,16 +111,11 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
             if not muestra.empty:
                 lon_chars = muestra.apply(len).mean()
                 lon_words = muestra.apply(lambda x: np.mean([len(w) for w in x.split()]) if len(x.split()) > 0 else 0).mean()
-                
                 if ((unicos_pct > 0.3 and lon_chars > 15) or (lon_chars > 50)) and (lon_words < 15):
                     cols_text_detectadas.append(col)
         
         if cols_text_detectadas:
-            resumen["analisis_nlp"] = {
-                "tarea_inferida": tarea_global,
-                "columnas_analizadas": {}
-            }
-            
+            resumen["analisis_nlp"] = {"tarea_inferida": tarea_global, "columnas_analizadas": {}}
             for col_txt in cols_text_detectadas:
                 textos_validos = df[col_txt].dropna().astype(str)
                 textos_validos = textos_validos[textos_validos.str.strip().astype(bool)]
@@ -141,32 +133,18 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                             "percentil_99_palabras": int(conteo_palabras.quantile(0.99))
                         }
                     }
-                    
-                    if tarea_global == "Regresión Continua":
-                        idx_comunes = conteo_palabras.index.intersection(objetivo_serie.index)
-                        if len(idx_comunes) > 5:
-                            corr_longitud = conteo_palabras.loc[idx_comunes].corr(objetivo_serie.loc[idx_comunes])
-                            info_columna["correlacion_longitud_vs_score"] = round(float(corr_longitud), 3) if not pd.isna(corr_longitud) else 0.0
-                    
-                    elif tarea_global == "Segmentación de Tokens":
-                        obj_str = objetivo_serie.astype(str)
-                        todos_los_tags = obj_str.str.replace(r'\[|\]|\'|\"|\,', ' ', regex=True).str.split(expand=True).stack()
-                        dist_tags = todos_los_tags.value_counts(normalize=True).head(6).to_dict()
-                        info_columna["distribucion_tags_individuales"] = {str(k): round(float(v)*100, 2) for k, v in dist_tags.items()}
                         
                     muestra_str = textos_validos.sample(min(len(textos_validos), 1000), random_state=42)
                     palabras_totales = " ".join(muestra_str.tolist()).lower().split()
                     
                     if palabras_totales:
                         ttr = len(set(palabras_totales)) / len(palabras_totales)
-                        len_promedio_palabra = np.mean([len(p) for p in palabras_totales])
                         info_columna["riqueza_lexica_ttr"] = round(float(ttr), 3)
-                        info_columna["longitud_promedio_palabra"] = round(float(len_promedio_palabra), 2)
                         
                     resumen["analisis_nlp"]["columnas_analizadas"][col_txt] = info_columna
 
         # ==========================================
-        # C. VARIABLES CATEGÓRICAS Y ALTA CARDINALIDAD
+        # 3. CATEGÓRICAS Y ALTA CARDINALIDAD
         # ==========================================
         cols_categoricas = [c for c in df.select_dtypes(include=['object', 'category']).columns if c not in cols_text_detectadas and c != columna_objetivo]
         resumen["alta_cardinalidad"] = {} 
@@ -182,31 +160,39 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 resumen["alta_cardinalidad"][col] = int(unicos)
 
         # ==========================================
-        # [NUEVA FUNCIONALIDAD 3] AUDITORÍA DE EQUIDAD (FAIRNESS)
+        # 4. AUDITORÍA DE EQUIDAD (TOPOLOGÍA ABSTRACTA)
         # ==========================================
         resumen["auditoria_equidad"] = {}
         if tarea_global == "Clasificación / Discreta" and columna_objetivo in df.columns:
-            posibles_demos = ['PA_SEXO', 'PA_NIVEL', 'SEXO', 'GENERO', 'PAISNAC', 'NIVEL_SOCIOECONOMICO']
-            cols_demo = [c for c in df.columns if str(c).upper() in posibles_demos]
-            
-            # BLINDAJE: Garantizamos que la clase positiva se pueda extraer como string
             try:
                 clase_positiva = df[columna_objetivo].value_counts().idxmin()
             except Exception:
                 clase_positiva = None
                 
             if clase_positiva is not None:
-                for col_demo in cols_demo:
-                    if df[col_demo].nunique() <= 15: 
-                        ct = pd.crosstab(df[col_demo], df[columna_objetivo], normalize='index')
-                        if clase_positiva in ct.columns:
-                            tasas = ct[clase_positiva].to_dict()
-                            resumen["auditoria_equidad"][f"Tasa de '{str(clase_positiva)}' por {col_demo}"] = {
-                                str(k): round(float(v) * 100, 2) for k, v in tasas.items()
-                            }
+                segmentos_potenciales = []
+                for c in df.columns:
+                    if c == columna_objetivo: continue
+                    unicos = df[c].nunique()
+                    es_cat_texto = pd.api.types.is_object_dtype(df[c]) or isinstance(df[c].dtype, pd.CategoricalDtype) or pd.api.types.is_bool_dtype(df[c])
+                    es_num_discreto = pd.api.types.is_numeric_dtype(df[c]) and 1 < unicos <= 5
+                    
+                    if (es_cat_texto and 1 < unicos <= 12) or es_num_discreto:
+                        segmentos_potenciales.append((c, unicos))
+                
+                segmentos_potenciales.sort(key=lambda x: x[1])
+                top_5_segmentos = [x[0] for x in segmentos_potenciales[:5]]
+                
+                for col_seg in top_5_segmentos:
+                    ct = pd.crosstab(df[col_seg], df[columna_objetivo], normalize='index')
+                    if clase_positiva in ct.columns:
+                        tasas = ct[clase_positiva].to_dict()
+                        resumen["auditoria_equidad"][f"Tasa de '{str(clase_positiva)}' por {col_seg}"] = {
+                            str(k): round(float(v) * 100, 2) for k, v in tasas.items()
+                        }
 
         # ==========================================
-        # 1.5 RADAR DE ACUERDO ENTRE ANOTADORES
+        # 5. FIABILIDAD HUMANA (ANOTADORES)
         # ==========================================
         resumen["analisis_acuerdo_anotadores"] = {}
         keywords_anotadores = ['annotator', 'rater', 'juez', 'anotador', 'coder', 'labeler']
@@ -221,53 +207,22 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 if len(df_pares) >= 10: 
                     try:
                         nombre_par = f"{col_A} vs {col_B}"
-                        if tarea_global == "Regresión Continua":
-                            s_A = pd.to_numeric(df_pares[col_A], errors='coerce').dropna()
-                            s_B = pd.to_numeric(df_pares[col_B], errors='coerce').dropna()
-                            idx_comunes = s_A.index.intersection(s_B.index)
-                            if len(idx_comunes) >= 10:
-                                val_A, val_B = s_A[idx_comunes], s_B[idx_comunes]
-                                corr = 1.0 if val_A.std() == 0 or val_B.std() == 0 else val_A.corr(val_B)
-                                corr = 0.0 if pd.isna(corr) else corr
-                                fiabilidad = "Acuerdo Fuerte" if corr > 0.7 else ("Acuerdo Moderado" if corr > 0.4 else "Acuerdo Pobre / Ruido")
-                                resumen["analisis_acuerdo_anotadores"]["pares_evaluados"][nombre_par] = {"metrica_usada": "Correlacion_Pearson", "score": round(float(corr), 3), "diagnostico_fiabilidad": fiabilidad}
-                        elif tarea_global == "Segmentación de Tokens":
-                            all_t_A, all_t_B = [], []
-                            for idx, row in df_pares.iterrows():
-                                t_A = str(row[col_A]).replace('[', '').replace(']', '').replace("'", '').replace('"', '').replace(',', ' ').split()
-                                t_B = str(row[col_B]).replace('[', '').replace(']', '').replace("'", '').replace('"', '').replace(',', ' ').split()
-                                min_t = min(len(t_A), len(t_B))
-                                all_t_A.extend(t_A[:min_t])
-                                all_t_B.extend(t_B[:min_t])
-                            if len(all_t_A) > 50:
-                                kappa = cohen_kappa_score(all_t_A, all_t_B)
-                                resumen["analisis_acuerdo_anotadores"]["pares_evaluados"][nombre_par] = {"metrica_usada": "Kappa_Cohen_por_Token", "score": round(float(kappa), 3), "tokens_evaluados": len(all_t_A), "diagnostico_fiabilidad": "Confiable" if kappa > 0.60 else "Ambigüedad Severa"}
-                        else:
-                            kappa = cohen_kappa_score(df_pares[col_A].astype(str), df_pares[col_B].astype(str))
-                            fiabilidad = "Desacuerdo Sistemático" if kappa < 0 else ("Acuerdo Pobre" if kappa <= 0.20 else ("Acuerdo Sustancial" if kappa <= 0.80 else "Acuerdo Casi Perfecto"))
-                            resumen["analisis_acuerdo_anotadores"]["pares_evaluados"][nombre_par] = {"metrica_usada": "Kappa_Cohen_Documento", "score": round(float(kappa), 3), "muestras_evaluadas": len(df_pares), "diagnostico_fiabilidad": fiabilidad}
+                        kappa = cohen_kappa_score(df_pares[col_A].astype(str), df_pares[col_B].astype(str))
+                        fiabilidad = "Desacuerdo Sistemático" if kappa < 0 else ("Acuerdo Pobre" if kappa <= 0.20 else ("Acuerdo Sustancial" if kappa <= 0.80 else "Acuerdo Casi Perfecto"))
+                        resumen["analisis_acuerdo_anotadores"]["pares_evaluados"][nombre_par] = {"metrica_usada": "Kappa_Cohen_Documento", "score": round(float(kappa), 3), "diagnostico_fiabilidad": fiabilidad}
                     except Exception: pass
 
         # ==========================================
-        # 2. ANÁLISIS PREDICTIVO NUMÉRICO (BLINDADO)
+        # 6. ANÁLISIS PREDICTIVO NUMÉRICO (BLINDADO)
         # ==========================================
         cols_num = df.select_dtypes(include=[np.number]).columns
         cols_pred_num = [c for c in cols_num if c != columna_objetivo]
-        
-        if es_regresion_tabular:
-            corr_pearson = df[cols_num].corr(method='pearson')[columna_objetivo].drop(columna_objetivo)
-            resumen["analisis_predictivo"]["pearson_fuertes"] = corr_pearson[abs(corr_pearson) > 0.3].round(3).to_dict()
-            corr_spearman = df[cols_num].corr(method='spearman')[columna_objetivo].drop(columna_objetivo)
-            resumen["analisis_predictivo"]["spearman_fuertes"] = corr_spearman[abs(corr_spearman) > 0.3].round(3).to_dict()
 
         if len(cols_pred_num) > 0:
-            
-            # BLINDAJE 1: Imputación rápida local para MI y VIF
-            # Solo eliminamos filas si no tienen el objetivo. Las predictoras se imputan.
+            # BLINDAJE: Imputación rápida para Matemáticas (Evita Listwise Deletion)
             df_math_safe = df[cols_pred_num + [columna_objetivo]].copy()
             df_math_safe = df_math_safe.dropna(subset=[columna_objetivo])
             
-            # Imputación por mediana para evitar "Listwise Deletion"
             if not df_math_safe.empty:
                 df_math_safe[cols_pred_num] = df_math_safe[cols_pred_num].fillna(df_math_safe[cols_pred_num].median())
 
@@ -279,17 +234,14 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                 except Exception: pass
 
                 try:
-                    # Filtramos columnas constantes (Varianza = 0 causa error en VIF)
                     X_vif = df_math_safe[cols_pred_num]
                     X_vif = X_vif.loc[:, X_vif.var() > 0]
                     if len(X_vif.columns) >= 2 and len(X_vif) > len(X_vif.columns):
                         vifs = np.diag(np.linalg.inv(X_vif.corr().values))
                         resumen["analisis_predictivo"]["multicolinealidad_vif_severa"] = {col: round(float(vif), 2) for col, vif in zip(X_vif.columns, vifs) if vif > 10 and not np.isinf(vif)}
-                except np.linalg.LinAlgError:
-                    resumen["alertas_criticas"].append("Matriz singular detectada en VIF. Existe correlación perfecta (1.0).")
                 except Exception: pass
 
-            # El análisis de Outliers SÍ debe hacerse ignorando Nulos columna por columna (dropna local)
+            # El análisis de Outliers se hace en los datos reales (con NaNs permitidos localmente)
             resumen["analisis_predictivo"]["valores_atipicos_severos"] = {}
             for col in cols_pred_num:
                 s = df[col].dropna()
@@ -298,32 +250,29 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                     IQR = Q3 - Q1
                     media, std = float(s.mean()), float(s.std())
                     
-                    pct_iqr, pct_z = 0.0, 0.0
-                    if IQR > 0: pct_iqr = round(float((len(s[(s < Q1 - 1.5 * IQR) | (s > Q3 + 1.5 * IQR)]) / len(s)) * 100), 2)
-                    if std > 0: pct_z = round(float((len(s[(s < media - 3 * std) | (s > media + 3 * std)]) / len(s)) * 100), 2)
+                    pct_iqr = round(float((len(s[(s < Q1 - 1.5 * IQR) | (s > Q3 + 1.5 * IQR)]) / len(s)) * 100), 2) if IQR > 0 else 0.0
+                    pct_z = round(float((len(s[(s < media - 3 * std) | (s > media + 3 * std)]) / len(s)) * 100), 2) if std > 0 else 0.0
                     
                     if pct_iqr > 5.0 or pct_z > 0.0:
                         skew_val = float(s.skew())
                         kurt_val = float(s.kurtosis())
-                        
                         resumen["analisis_predictivo"]["valores_atipicos_severos"][col] = {
-                            "porcentaje_outliers_iqr": pct_iqr,
-                            "porcentaje_outliers_zscore": pct_z,
+                            "porcentaje_outliers_iqr": pct_iqr, "porcentaje_outliers_zscore": pct_z,
                             "estadisticas_base": {
                                 "media": round(media, 2), "desviacion_estandar": round(std, 2),
-                                "valor_minimo_real": round(float(s.min()), 2), "valor_maximo_real": round(float(s.max()), 2),
                                 "asimetria_skewness": round(skew_val, 2) if not pd.isna(skew_val) else 0.0, 
                                 "curtosis_kurtosis": round(kurt_val, 2) if not pd.isna(kurt_val) else 0.0, 
                                 "escasez_ceros_pct": round(float((s == 0).mean() * 100), 2)
                             }
                         }
 
-        # BLINDAJE 2: Imputación rápida para PCA (Evita perder pacientes)
+        # ==========================================
+        # 7. SEPARABILIDAD (PCA sobre datos imputados)
+        # ==========================================
         if not es_regresion_tabular:
             resumen["analisis_predictivo"]["separabilidad_clases"] = {}
             y_completo = df[columna_objetivo].dropna()
             if 1 < y_completo.nunique() <= 15 and len(cols_pred_num) >= 2:
-                # Usamos el dataframe imputado localmente que ya creamos (df_math_safe)
                 if not df_math_safe.empty and len(df_math_safe) > 50:
                     clases_validas = df_math_safe[columna_objetivo].value_counts()[df_math_safe[columna_objetivo].value_counts() > 1].index
                     df_sep = df_math_safe[df_math_safe[columna_objetivo].isin(clases_validas)]
@@ -339,33 +288,9 @@ def procesar_df_a_json(df, columna_objetivo, columna_nodo=""):
                                 score_silueta = float(silhouette_score(X_pca, df_sample[columna_objetivo], random_state=42))
                                 estado_manifold = "Altamente Separable" if score_silueta > 0.40 else ("Superposición Moderada" if score_silueta > 0.15 else "Caos Espacial")
                                 resumen["analisis_predictivo"]["separabilidad_clases"] = {
-                                    "score_silueta_pca": round(score_silueta, 3),
-                                    "diagnostico_topologico": estado_manifold
+                                    "score_silueta_pca": round(score_silueta, 3), "diagnostico_topologico": estado_manifold
                                 }
                             except Exception: pass
-
-        # ==========================================
-        # 3. ANÁLISIS DE SILOS (APRENDIZAJE FEDERADO)
-        # ==========================================
-        if columna_nodo and columna_nodo in df.columns:
-            nodos_validos = df[columna_nodo].dropna()
-            if nodos_validos.nunique() > 50:
-                resumen["alertas_criticas"].append(f"La columna de nodo '{columna_nodo}' tiene {nodos_validos.nunique()} valores únicos. Se abortó el análisis federado por riesgo de OOM.")
-            elif nodos_validos.nunique() < 2:
-                resumen["alertas_criticas"].append(f"La columna '{columna_nodo}' tiene un solo nodo válido. No se puede realizar análisis federado multicéntrico.")
-            else:
-                resumen["analisis_federado_nodos"] = {
-                    "distribucion_muestras": {str(k): round(float(v) * 100, 2) for k, v in nodos_validos.value_counts(normalize=True).to_dict().items()},
-                    "divergencia_objetivo_por_nodo": {}
-                }
-                if columna_objetivo and columna_objetivo in df.columns:
-                    for nodo in nodos_validos.unique():
-                        df_nodo = df[df[columna_nodo] == nodo]
-                        if es_regresion_tabular:
-                            serie_obj_nodo = df_nodo[columna_objetivo].dropna()
-                            resumen["analisis_federado_nodos"]["divergencia_objetivo_por_nodo"][str(nodo)] = {"media_objetivo": round(float(serie_obj_nodo.mean()), 2) if not serie_obj_nodo.empty else 0.0}
-                        else:
-                            resumen["analisis_federado_nodos"]["divergencia_objetivo_por_nodo"][str(nodo)] = {str(k): round(float(v) * 100, 2) for k, v in df_nodo[columna_objetivo].value_counts(normalize=True).head(10).to_dict().items()}
 
     except Exception as e:
         resumen["alertas_criticas"].append(f"Error general en el procesamiento del DataFrame: {str(e)}")
